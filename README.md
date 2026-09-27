@@ -73,6 +73,8 @@ puntos de salud, y para publicar lo que el barrio necesita.
 ├── public/images/          # imágenes estáticas (visibles en producción)
 ├── index.html
 ├── vite.config.ts
+├── Dockerfile               # multi-stage: build con Vite + imagen mínima de runtime
+├── .dockerignore            # sin .env (secretos) ni node_modules dentro de la imagen
 └── tsconfig.json           # strict + noUnusedLocals/Parameters
 ```
 
@@ -273,6 +275,38 @@ Con Supabase configurado, el primer arranque crea las tablas solo (si hay
 `SUPABASE_ACCESS_TOKEN`); para cargar los datos iniciales ejecuta una vez
 `npm run db:seed`. Las políticas RLS de `supabase/schema.sql` ya protegen
 las escrituras de cara al exterior.
+
+### Docker
+
+El `Dockerfile` es multi-stage: el frontend se compila con Vite y la imagen
+final solo lleva dependencias de producción + el árbol mínimo que necesita
+el servidor (`dist/`, `server*`, `supabase/`, `scripts/`).
+
+```bash
+# 1) Construir. La clave pública de Clerk va como build-arg porque Vite la
+#    hornea en el bundle; no hay ningún secreto dentro de la imagen.
+docker build -t ayudaencali \
+  --build-arg VITE_CLERK_PUBLISHABLE_KEY=pk_live_xxx .
+
+# 2) Ejecutar. Los secretos llegan en tiempo de ejecución.
+docker run --rm -p 3000:3000 --env-file .env ayudaencali
+
+# 3) (Opcional) esquema y datos usando la propia imagen, una sola vez.
+docker run --rm --env-file .env ayudaencali node --import tsx scripts/apply-schema.ts
+docker run --rm --env-file .env ayudaencali node --import tsx scripts/seed-db.ts
+```
+
+Detalles del contenedor:
+
+- **Sin secretos horneados**: `.dockerignore` excluye `.env`; solo se inyecta
+  la clave pública de Clerk (que además es pública por definición).
+- **Un único proceso como PID 1** (`node --import tsx`, no `npm start`), así
+  que `docker stop` / Cloud Run envían SIGTERM y el servidor cierra las
+  peticiones en curso antes de salir (código 0).
+- **Usuario sin privilegios** (`USER node`) y `HEALTHCHECK` contra
+  `/api/health`.
+- Si algún día añades `package-lock.json`, la build pasa sola de
+  `npm install` a `npm ci` (reproducible).
 
 ## Enlaces
 

@@ -1,0 +1,21 @@
+# Dependencias y artefactos: se (re)crean dentro de la imagen.
+node_modules
+dist
+
+# Secretos: jamás dentro de la imagen. Las claves se inyectan al ejecutar
+# (--env-file / -e) salvo VITE_CLERK_PUBLISHABLE_KEY, que va como build-arg.
+.env
+.env.*
+
+# Repo, editor y basura.
+.git
+.gitignore
+.vercel
+*.log
+coverage
+.DS_Store
+
+# No hace falta compilar ni ejecutar.
+README.md
+Dockerfile
+.dockerignore

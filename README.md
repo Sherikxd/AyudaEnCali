@@ -120,8 +120,16 @@ que empiezan con `VITE_`.
 | `SUPABASE_SERVICE_ROLE_KEY` | Recomendada | Escrituras desde el servidor (nunca en el cliente) |
 | `SUPABASE_ACCESS_TOKEN` | No | Token de gestión: el servidor crea las tablas si faltan (`npm run db:setup`) |
 | `CARTO_API_KEY` | No | Capa base del mapa |
-| `VITE_CLERK_PUBLISHABLE_KEY` | Para auth | Clave **pública** de Clerk (prefijo `VITE_` obligatorio) |
+| `VITE_CLERK_PUBLISHABLE_KEY` | Para auth | Clave **pública** de Clerk. El servidor la lee en runtime y la sirve en `/api/config` (sin recompilar); si además va como `--build-arg`, queda horneada en el bundle |
+| `CLERK_PUBLISHABLE_KEY` | No | Alias sin prefijo `VITE_` de la misma clave (también aceptado por el servidor) |
 | `CLERK_SECRET_KEY` | No | Clave secreta, solo servidor |
+
+> **Aviso sobre `VITE_*`**: esas variables se leen **al compilar** (`vite
+> build`) y quedan escritas en el JavaScript estático; definirlas después en
+> Cloud Run/Vercel no las mete en el bundle. Por eso la clave de Clerk tiene
+> doble vía: el servidor la expone en `/api/config` (runtime) y `main.tsx`
+> la usa antes de montar `<ClerkProvider>`. Cualquier otra variable `VITE_*`
+> nueva que agregues **sí** requerirá recompilar.
 
 ## Scripts
 
@@ -283,10 +291,11 @@ final solo lleva dependencias de producción + el árbol mínimo que necesita
 el servidor (`dist/`, `server*`, `supabase/`, `scripts/`).
 
 ```bash
-# 1) Construir. La clave pública de Clerk va como build-arg porque Vite la
-#    hornea en el bundle; no hay ningún secreto dentro de la imagen.
-docker build -t ayudaencali \
-  --build-arg VITE_CLERK_PUBLISHABLE_KEY=pk_live_xxx .
+# 1) Construir. La clave pública de Clerk NO hace falta aquí: si no va como
+#    build-arg, se define como variable de entorno al ejecutar (el servidor
+#    la sirve en /api/config). Opcional, para hornerla en el bundle:
+#      docker build -t ayudaencali --build-arg VITE_CLERK_PUBLISHABLE_KEY=pk_live_xxx .
+docker build -t ayudaencali .
 
 # 2) Ejecutar. Los secretos llegan en tiempo de ejecución.
 docker run --rm -p 3000:3000 --env-file .env ayudaencali

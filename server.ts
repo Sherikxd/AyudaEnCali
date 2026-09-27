@@ -158,6 +158,11 @@ app.get('/api/config', async (_req: Request, res: Response) => {
     supabaseHint: supabaseState.hint,
     cartoConfigured: Boolean(process.env.CARTO_API_KEY),
     hasGeminiKey: Boolean(process.env.GEMINI_API_KEY),
+    // Clave pública de Clerk: se lee aquí en **tiempo de ejecución** para que
+    // baste con definirla en el entorno del despliegue (Cloud Run, Vercel…),
+    // sin recompilar el bundle. Es pública por diseño (viaja al navegador);
+    // la secreta (CLERK_SECRET_KEY) jamás sale del servidor.
+    clerkPublishableKey: process.env.VITE_CLERK_PUBLISHABLE_KEY || process.env.CLERK_PUBLISHABLE_KEY || null,
     time: new Date().toISOString(),
   };
   res.json(config);

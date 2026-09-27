@@ -2,15 +2,16 @@
 # ---------------------------------------------------------------------------
 # AyudaEnCali — imagen de producción (multi-stage)
 #
-#   build:  docker build -t ayudaencali \
-#             --build-arg VITE_CLERK_PUBLISHABLE_KEY=pk_live_xxx .
+#   build:  docker build -t ayudaencali .
 #   run:    docker run --rm -p 3000:3000 --env-file .env ayudaencali
 #
 # La imagen NO lleva secretos: `.dockerignore` excluye `.env`. Las claves
-# secretas llegan en tiempo de ejecución (--env-file / -e). La única que va
-# en el build es la clave *pública* de Clerk, porque Vite la hornea en el
-# bundle durante `vite build` (sin ella, la app muestra la tarjeta de aviso
-# de autenticación).
+# secretas llegan en tiempo de ejecución (--env-file / -e). La clave *pública*
+# de Clerk tampoco hace falta en el build: el servidor la lee de las variables
+# de entorno y la sirve en /api/config. El build-arg siguiente es opcional y
+# solo la hornea en el bundle (una petición menos al arrancar):
+#
+#   docker build -t ayudaencali --build-arg VITE_CLERK_PUBLISHABLE_KEY=pk_live_xxx .
 # ---------------------------------------------------------------------------
 
 # --- 1) Build del frontend ---------------------------------------------------

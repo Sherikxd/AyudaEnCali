@@ -141,6 +141,14 @@ export interface ConfigResponse {
   supabaseHint: string | null;
   cartoConfigured: boolean;
   hasGeminiKey: boolean;
+  /**
+   * Clave pública de Clerk (`pk_…`) o `null` si no está definida.
+   *
+   * Se expone aquí a propósito: es pública por diseño y permite configurarla
+   * en tiempo de ejecución (variables del contenedor) sin recompilar. La
+   * secreta (`CLERK_SECRET_KEY`) nunca aparece en esta respuesta.
+   */
+  clerkPublishableKey: string | null;
   time: string;
 }
 

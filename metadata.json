@@ -1,0 +1,6 @@
+{
+  "name": "AyudaEnCali",
+  "description": "Plataforma comunitaria para reportar y consultar en tiempo real centros de acopio, veterinarias, albergues y emergencias en Cali con mapa interactivo y asistente de IA.",
+  "requestFramePermissions": ["geolocation"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

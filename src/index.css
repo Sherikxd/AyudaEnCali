@@ -1,0 +1,40 @@
+@import "tailwindcss";
+
+@layer base {
+  html, body {
+    font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+}
+
+/* Custom Leaflet popup styling for clean Rappi aesthetic */
+.leaflet-popup-content-wrapper {
+  border-radius: 16px !important;
+  box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.1), 0 8px 10px -6px rgba(0, 0, 0, 0.1) !important;
+  border: 1px solid rgba(241, 245, 249, 1) !important;
+  padding: 0 !important;
+  overflow: hidden;
+}
+
+.leaflet-popup-content {
+  margin: 0 !important;
+  line-height: 1.4 !important;
+}
+
+.leaflet-popup-tip-container {
+  overflow: visible !important;
+}
+
+.leaflet-container {
+  font-family: 'Plus Jakarta Sans', sans-serif !important;
+  width: 100%;
+  height: 100%;
+}
+
+/* Completely remove attribution badge / watermark banner */
+.leaflet-control-attribution,
+.leaflet-control-attribution * {
+  display: none !important;
+  visibility: hidden !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
+}

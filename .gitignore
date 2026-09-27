@@ -1,0 +1,21 @@
+# Dependencias
+node_modules/
+
+# Builds
+build/
+dist/
+coverage/
+
+# Entorno (credenciales): nunca se versionan
+.env
+.env.local
+.env.*.local
+
+# Logs y sistema
+*.log
+npm-debug.log*
+.DS_Store
+
+# Editores
+.vscode/
+.idea/

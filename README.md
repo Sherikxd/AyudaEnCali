@@ -276,5 +276,4 @@ las escrituras de cara al exterior.
 
 ## Enlaces
 
-- App original en AI Studio: https://ai.studio/apps/532e5708-acab-47fc-aa41-77a3fa57ef6f
 - Producción: https://ayudaencali.lat

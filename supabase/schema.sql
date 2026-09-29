@@ -60,9 +60,24 @@ CREATE INDEX IF NOT EXISTS idx_help_needs_status ON help_needs (status);
 CREATE INDEX IF NOT EXISTS idx_help_needs_urgency ON help_needs (urgency);
 CREATE INDEX IF NOT EXISTS idx_help_needs_created_at ON help_needs (created_at DESC);
 
+-- TABLA 3: Apoyos individuales (la dinámica de "likes") ---------------------
+-- Fuente de verdad de *quién* apoyó *qué*: la clave primaria compuesta
+-- garantiza que una misma cuenta dé exactamente un apoyo por necesidad y
+-- pueda retirarlo. `help_needs.supporters_count` sigue siendo el contador
+-- visible (incluye los apoyos históricos que no tienen usuario asociado).
+CREATE TABLE IF NOT EXISTS need_supporters (
+  need_id TEXT NOT NULL REFERENCES help_needs (id) ON DELETE CASCADE,
+  user_id TEXT NOT NULL,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  PRIMARY KEY (need_id, user_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_need_supporters_user_id ON need_supporters (user_id);
+
 -- Row Level Security -------------------------------------------------------
 ALTER TABLE help_points ENABLE ROW LEVEL SECURITY;
 ALTER TABLE help_needs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE need_supporters ENABLE ROW LEVEL SECURITY;
 
 DO $$
 BEGIN
@@ -129,3 +144,9 @@ BEGIN
 END $$;
 
 -- Eliminaciones: sin políticas (nadie puede borrar desde la API con anon) --
+
+-- need_supporters: RLS activo y SIN políticas a propósito -------------------
+-- Solo el backend accede con la SERVICE ROLE KEY (que bypasea RLS). Así ni
+-- `anon` ni `authenticated` pueden descubrir qué usuario apoyó qué
+-- necesidad: la API solo devuelve ese dato a la propia cuenta, con la
+-- sesión de Clerk ya verificada en el servidor.

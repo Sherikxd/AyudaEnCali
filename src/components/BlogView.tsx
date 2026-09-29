@@ -1,4 +1,5 @@
 import React, { useState, useMemo } from 'react';
+import { useClerk, useUser } from '@clerk/clerk-react';
 import { useApp } from '../context/AppContext';
 import { HelpCategory, HelpNeed } from '../types';
 import { 
@@ -18,11 +19,16 @@ export const BlogView: React.FC = () => {
   const { 
     helpNeeds, 
     supportNeed, 
+    supportedNeedIds,
     setIsReportModalOpen, 
     setReportModalType,
     userProfile,
     openAuthModal
   } = useApp();
+
+  // El apoyo exige cuenta: sin sesión de Clerk se abre el inicio de sesión.
+  const { isSignedIn } = useUser();
+  const { openSignIn } = useClerk();
 
   const [activeFilter, setActiveFilter] = useState<'all' | 'alta' | HelpCategory | 'resuelta'>('all');
   const [searchQuery, setSearchQuery] = useState('');
@@ -54,6 +60,21 @@ export const BlogView: React.FC = () => {
       setCopiedId(need.id);
       setTimeout(() => setCopiedId(null), 2000);
     }
+  };
+
+  /** ¿La cuenta actual ya apoyó esta necesidad? (corazón relleno) */
+  const isNeedSupported = (need: HelpNeed) => supportedNeedIds.includes(need.id);
+
+  /**
+   * Like conmutador: una sola acción por clic (`add` da el apoyo, `remove`
+   * lo retira). Sin cuenta de Clerk se abre el inicio de sesión de la app.
+   */
+  const handleSupport = (need: HelpNeed) => {
+    if (!isSignedIn) {
+      openSignIn();
+      return;
+    }
+    void supportNeed(need.id, isNeedSupported(need) ? 'remove' : 'add');
   };
 
   const handleOpenReport = () => {
@@ -312,13 +333,37 @@ export const BlogView: React.FC = () => {
                         </span>
 
                         <button
-                          onClick={() => supportNeed(need.id)}
-                          className="flex items-center gap-1.5 text-xs text-slate-600 hover:text-rose-600 transition-colors bg-slate-50 hover:bg-rose-50 px-2.5 py-1 rounded-xl"
+                          type="button"
+                          onClick={() => handleSupport(need)}
+                          aria-pressed={isNeedSupported(need)}
+                          aria-label={
+                            isNeedSupported(need)
+                              ? `Retirar tu apoyo de ${need.title}`
+                              : `Apoyar ${need.title}`
+                          }
+                          title={
+                            isNeedSupported(need)
+                              ? 'Retirar tu apoyo'
+                              : isSignedIn
+                                ? 'Apoyar esta necesidad'
+                                : 'Inicia sesión para apoyar'
+                          }
+                          className={`flex items-center gap-1.5 text-xs transition-colors px-2.5 py-1 rounded-xl ${
+                            isNeedSupported(need)
+                              ? 'text-rose-600 bg-rose-50'
+                              : 'text-slate-600 hover:text-rose-600 bg-slate-50 hover:bg-rose-50'
+                          }`}
                         >
-                          <Heart className="w-3.5 h-3.5 text-rose-500" fill="currentColor" />
+                          <Heart
+                            className={`w-3.5 h-3.5 ${isNeedSupported(need) ? 'text-rose-600' : 'text-rose-500'}`}
+                            fill={isNeedSupported(need) ? 'currentColor' : 'none'}
+                          />
                           <span className="font-mono tabular-nums font-semibold">
                             {need.supportersCount} apoyos
                           </span>
+                          {!isSignedIn && (
+                            <span className="text-slate-400">· inicia sesión</span>
+                          )}
                         </button>
                       </div>
 

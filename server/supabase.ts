@@ -140,9 +140,9 @@ function sqlEditorUrl(host: string | null): string {
 function missingTablesHint(host: string | null): string {
   const where = sqlEditorUrl(host);
   if (process.env.SUPABASE_ACCESS_TOKEN) {
-    return `Faltan las tablas help_points y help_needs. El servidor intentará crearlas solo; si no puede, pega supabase/schema.sql en ${where}.`;
+    return `Faltan tablas del esquema (help_points, help_needs o need_supporters). El servidor intentará crearlas solo; si no puede, pega supabase/schema.sql en ${where}.`;
   }
-  return `Faltan las tablas help_points y help_needs. Ejecuta el esquema en ${where} (o descárgalo con GET /api/supabase/sql).`;
+  return `Faltan tablas del esquema (help_points, help_needs o need_supporters). Ejecuta el esquema en ${where} (o descárgalo con GET /api/supabase/sql).`;
 }
 
 const AUTH_HINT = 'Claves de Supabase rechazadas: revisa SUPABASE_SERVICE_ROLE_KEY / SUPABASE_ANON_KEY en .env.';
@@ -186,7 +186,7 @@ function noteSupabaseOk(): void {
   status.tablesReady = true;
   status.hint = null;
   lastLoggedKind = null;
-  logger.info('Supabase: esquema verificado (help_points y help_needs accesibles).');
+  logger.info('Supabase: esquema verificado (help_points, help_needs y need_supporters accesibles).');
 }
 
 /* -------------------------------------------------------------------------- */
@@ -232,12 +232,23 @@ const VERIFY_THROTTLE_MS = 30_000;
 let lastVerifyAt = 0;
 let inflight: Promise<void> | null = null;
 
+/** Columna existente de cada tabla del esquema (para sondearla sin error de columna). */
+const SCHEMA_PROBES: ReadonlyArray<readonly [table: string, column: string]> = [
+  ['help_points', 'id'],
+  ['help_needs', 'id'],
+  ['need_supporters', 'need_id'],
+];
+
 async function probe(target: SupabaseClient): Promise<SupabaseErrorKind | 'ok'> {
   // Ojo: no usar `head: true` aquí. Con peticiones HEAD PostgREST no devuelve
   // cuerpo de error, así que una tabla inexistente parecería una consulta OK.
-  const { error } = await target.from('help_points').select('id').limit(1);
-  if (!error) return 'ok';
-  return classifySupabaseError(error);
+  // Se comprueba **toda** la tabla del esquema: si aparece una nueva (p. ej.
+  // need_supporters) el sondeo la detecta y se aplica/actualiza el DDL solo.
+  for (const [table, column] of SCHEMA_PROBES) {
+    const { error } = await target.from(table).select(column).limit(1);
+    if (error) return classifySupabaseError(error);
+  }
+  return 'ok';
 }
 
 /** Espera entre intentos de creación automática del esquema. */
@@ -313,7 +324,7 @@ async function verify(): Promise<void> {
     status.tablesReady = false;
     status.hint =
       applied && !applied.ok
-        ? `Faltan las tablas help_points y help_needs y no se pudieron crear (${applied.message}). Pega supabase/schema.sql en ${sqlEditorUrl(status.host)}.`
+        ? `Faltan tablas del esquema (help_points, help_needs o need_supporters) y no se pudieron crear (${applied.message}). Pega supabase/schema.sql en ${sqlEditorUrl(status.host)}.`
         : missingTablesHint(status.host);
     logOnce('missing', `Supabase: ${status.hint}`);
     return;

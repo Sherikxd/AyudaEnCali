@@ -1,12 +1,16 @@
 import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
+import { useAuth } from '@clerk/clerk-react';
 import {
   CommentsResponse,
   ConfigResponse,
   HelpNeed,
   HelpPoint,
+  MySupportsResponse,
   NeedsResponse,
   PointComment,
   PointsResponse,
+  SupportAction,
+  SupportResponse,
   UserRole,
   UserCoordinates,
   UserProfile,
@@ -36,6 +40,8 @@ interface AppContextType {
   setActiveTab: (tab: 'map' | 'blog' | 'chat' | 'profile') => void;
   helpPoints: HelpPoint[];
   helpNeeds: HelpNeed[];
+  /** Necesidades que la cuenta actual (sesión de Clerk) ya apoyó. */
+  supportedNeedIds: string[];
   pointComments: PointComment[];
   userProfile: UserProfile;
   userLocation: UserCoordinates | null;
@@ -70,7 +76,7 @@ interface AppContextType {
   addHelpNeed: (needData: Omit<HelpNeed, 'id' | 'createdAt' | 'supportersCount'>) => Promise<void>;
   addPointComment: (pointId: string, commentText: string) => Promise<boolean>;
   toggleSavePoint: (pointId: string) => void;
-  supportNeed: (needId: string) => Promise<void>;
+  supportNeed: (needId: string, action: SupportAction) => Promise<void>;
   updateUserProfile: (profile: Partial<UserProfile>) => void;
   registerUser: (data: {
     name: string;
@@ -97,6 +103,11 @@ const STORAGE_KEYS = {
 };
 
 export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
+  // Sesión de Clerk: identidad real para las acciones que exigen "tener
+  // usuario" (p. ej. dar/retirar apoyos). `getToken` entrega el JWT que el
+  // servidor verifica antes de aceptar la acción.
+  const { isSignedIn, userId: clerkUserId, getToken } = useAuth();
+
   const [activeTab, setActiveTab] = useState<'map' | 'blog' | 'chat' | 'profile'>('map');
 
   const [helpPoints, setHelpPoints] = useState<HelpPoint[]>(() => {
@@ -122,6 +133,10 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     const saved = loadJSON<PointComment[] | null>(STORAGE_KEYS.COMMENTS, null);
     return Array.isArray(saved) ? saved : INITIAL_POINT_COMMENTS;
   });
+
+  // Apoyos ("likes") de la cuenta actual, como IDs de necesidad. Se limpia
+  // al cerrar sesión y se recarga desde el servidor al iniciar.
+  const [supportedNeedIds, setSupportedNeedIds] = useState<string[]>([]);
 
   const [userProfile, setUserProfile] = useState<UserProfile>(() => {
     const saved = loadJSON<UserProfile | null>(STORAGE_KEYS.PROFILE, null);
@@ -243,6 +258,32 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   const logoutUser = () => {
     setUserProfile(INITIAL_USER_PROFILE);
   };
+
+  // Carga los apoyos de la cuenta al entrar la sesión y los limpia al salir.
+  useEffect(() => {
+    if (!isSignedIn || !clerkUserId) {
+      setSupportedNeedIds([]);
+      return undefined;
+    }
+
+    let cancelled = false;
+    (async () => {
+      try {
+        const token = await getToken();
+        if (!token || cancelled) return;
+        const data = await apiFetch<MySupportsResponse>('/api/support/mine', {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (!cancelled && Array.isArray(data.needIds)) setSupportedNeedIds(data.needIds);
+      } catch (error) {
+        if (!cancelled) logger.warn('No se pudieron cargar tus apoyos:', error);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isSignedIn, clerkUserId, getToken]);
 
   // Sync with backend API
   useEffect(() => {
@@ -504,17 +545,69 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     });
   };
 
-  const supportNeed = async (needId: string) => {
-    setHelpNeeds((prev) =>
-      prev.map((item) =>
-        item.id === needId ? { ...item, supportersCount: item.supportersCount + 1 } : item
-      )
-    );
+  /**
+   * Apoya o retira el apoyo de una necesidad (like conmutador).
+   *
+   * Requiere sesión de Clerk: el token viaja en `Authorization` y el servidor
+   * lo verifica antes de aceptar. El estado se actualiza de forma optimista y
+   * se revierte si el servidor no lo confirma; al terminar manda la respuesta
+   * del servidor (`count` y `supported`), no la suposición local.
+   */
+  const supportNeed = async (needId: string, action: SupportAction) => {
+    const adding = action === 'add';
+    const wasSupported = supportedNeedIds.includes(needId);
+
+    // Ya está en ese estado: un usuario no puede dar dos veces el mismo like.
+    if (adding === wasSupported) return;
+
+    /**
+     * Aplica el estado local: `toSupported` decide si el corazón queda
+     * relleno y `delta` cómo se mueve el contador (nunca por debajo de 0).
+     */
+    const applyLocalState = (toSupported: boolean, delta: 1 | -1) => {
+      setSupportedNeedIds((prev) => {
+        const inList = prev.includes(needId);
+        if (toSupported && !inList) return [...prev, needId];
+        if (!toSupported && inList) return prev.filter((id) => id !== needId);
+        return prev;
+      });
+      setHelpNeeds((prev) =>
+        prev.map((item) =>
+          item.id === needId
+            ? { ...item, supportersCount: Math.max(0, item.supportersCount + delta) }
+            : item,
+        ),
+      );
+    };
+
+    applyLocalState(adding, adding ? 1 : -1);
 
     try {
-      await apiFetch(`/api/needs/${encodeURIComponent(needId)}/support`, { method: 'POST' });
+      const token = await getToken();
+      if (!token) throw new Error('No hay sesión activa.');
+
+      const data = await apiFetch<SupportResponse>(
+        `/api/needs/${encodeURIComponent(needId)}/support`,
+        {
+          method: 'POST',
+          body: { action },
+          headers: { Authorization: `Bearer ${token}` },
+        },
+      );
+
+      // El servidor es la fuente de verdad: alineamos contador y estado.
+      setHelpNeeds((prev) =>
+        prev.map((item) => (item.id === needId ? { ...item, supportersCount: data.count } : item)),
+      );
+      setSupportedNeedIds((prev) => {
+        const inList = prev.includes(needId);
+        if (data.supported && !inList) return [...prev, needId];
+        if (!data.supported && inList) return prev.filter((id) => id !== needId);
+        return prev;
+      });
     } catch (error) {
-      logger.warn('Apoyo registrado localmente:', error);
+      logger.warn('No se pudo registrar el apoyo:', error);
+      applyLocalState(!adding, adding ? -1 : 1); // deshace lo no confirmado
     }
   };
 
@@ -551,6 +644,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         setActiveTab,
         helpPoints,
         helpNeeds,
+        supportedNeedIds,
         pointComments,
         userProfile,
         userLocation,

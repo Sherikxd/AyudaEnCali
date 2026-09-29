@@ -119,9 +119,20 @@ export interface NeedResponse {
   need: HelpNeed;
 }
 
+/** Acción de apoyo: `add` da el like, `remove` lo retira (una sola vez por usuario). */
+export type SupportAction = 'add' | 'remove';
+
 export interface SupportResponse {
   success: boolean;
+  /** Contador actualizado de la necesidad (fuente de verdad: el servidor). */
   count: number;
+  /** Estado final de *esta* cuenta: `true` si queda como apoyante. */
+  supported: boolean;
+}
+
+export interface MySupportsResponse {
+  /** IDs de las necesidades que la cuenta actual ya apoyó. */
+  needIds: string[];
 }
 
 export interface ChatResponse {

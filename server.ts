@@ -8,6 +8,7 @@ import { fileURLToPath } from 'url';
 import { apiNotFound, asyncHandler, errorHandler, securityHeaders } from './server/middleware';
 import { createRateLimiter } from './server/rateLimit';
 import { errorMessage, logger } from './server/logger';
+import { getAuthenticatedUser, respondUnauthorized } from './server/auth';
 import { INITIAL_COMMENTS, INITIAL_HELP_NEEDS, INITIAL_HELP_POINTS } from './server/seedData';
 import { SUPABASE_SQL } from './server/schema';
 import {
@@ -30,7 +31,16 @@ import {
   validateNeed,
   validatePoint,
 } from './server/validation';
-import type { ChatResponse, ConfigResponse, HelpNeed, HelpPoint, PointComment } from './src/types';
+import type {
+  ChatResponse,
+  ConfigResponse,
+  HelpNeed,
+  HelpPoint,
+  MySupportsResponse,
+  PointComment,
+  SupportAction,
+  SupportResponse,
+} from './src/types';
 
 dotenv.config();
 
@@ -108,6 +118,24 @@ initSupabase();
 let memoryPoints: HelpPoint[] = [...INITIAL_HELP_POINTS];
 let memoryNeeds: HelpNeed[] = [...INITIAL_HELP_NEEDS];
 let memoryComments: PointComment[] = [...INITIAL_COMMENTS];
+
+/**
+ * Apoyos ("likes") por necesidad en memoria: `needId -> conjunto de userId`.
+ *
+ * Es el espejo local de la tabla `need_supporters` y respalda los casos en
+ * los que Supabase no está disponible. Sin base de datos solo existe en este
+ * proceso (se pierde al reiniciar, igual que el resto de la caché).
+ */
+const memoryNeedSupporters = new Map<string, Set<string>>();
+
+function getSupporterSet(needId: string): Set<string> {
+  let set = memoryNeedSupporters.get(needId);
+  if (!set) {
+    set = new Set();
+    memoryNeedSupporters.set(needId, set);
+  }
+  return set;
+}
 
 function pushInCache<T>(list: T[], item: T): T[] {
   return [item, ...list].slice(0, MAX_CACHED_ITEMS);
@@ -287,10 +315,81 @@ app.post(
   }),
 );
 
+/** Acciones aceptadas por `POST /api/needs/:id/support`. */
+const SUPPORT_ACTIONS: ReadonlySet<string> = new Set<string>(['add', 'remove']);
+
+/**
+ * Apoyos de la cuenta que hace la petición (el "corazón relleno" del tablón).
+ * Exige sesión de Clerk verificada: responde 401 en caso contrario.
+ */
+app.get(
+  '/api/support/mine',
+  asyncHandler(async (req: Request, res: Response) => {
+    const user = await getAuthenticatedUser(req);
+    if (!user) {
+      respondUnauthorized(res, 'Debes iniciar sesión para ver tus apoyos.');
+      return;
+    }
+
+    const needIds = new Set<string>();
+
+    const client = getSupabaseClient();
+    if (client) {
+      const { data, error } = await withSupabaseRetry<{ need_id: string }[]>(
+        'Supabase select need_supporters',
+        () =>
+          client
+            .from('need_supporters')
+            .select('need_id')
+            .eq('user_id', user.userId)
+            .limit(500),
+      );
+      if (!error && Array.isArray(data)) {
+        for (const row of data) needIds.add(row.need_id);
+      }
+    }
+
+    // Añade los apoyos que solo viven en memoria (sin BD o tabla sin crear).
+    for (const [needId, supporters] of memoryNeedSupporters) {
+      if (supporters.has(user.userId)) needIds.add(needId);
+    }
+
+    const payload: MySupportsResponse = { needIds: [...needIds] };
+    res.json(payload);
+  }),
+);
+
+/**
+ * Apoyar (like) o retirar el apoyo de una necesidad.
+ *
+ * Reglas de la dinámica:
+ *  - Solo quien tiene **cuenta** puede apoyar (token de Clerk verificado
+ *    criptográficamente en el servidor: `401` sin sesión).
+ *  - Un usuario = un apoyo por necesidad: repetir `add` es idempotente y
+ *    `remove` retira el apoyo sin dejar el contador en negativo.
+ *  - La fuente de verdad es `need_supporters` (PK compuesta `need_id,user_id`);
+ *    `supporters_count` solo cambia cuando se inserta o borra una fila.
+ */
 app.post(
   '/api/needs/:id/support',
   writeLimiter,
   asyncHandler(async (req: Request, res: Response) => {
+    const user = await getAuthenticatedUser(req);
+    if (!user) {
+      respondUnauthorized(res, 'Debes iniciar sesión para apoyar una necesidad.');
+      return;
+    }
+
+    const body = (req.body ?? {}) as { action?: unknown };
+    const action = typeof body.action === 'string' && SUPPORT_ACTIONS.has(body.action)
+      ? (body.action as SupportAction)
+      : null;
+    if (!action) {
+      res.status(400).json({ error: 'Acción no válida: usa "add" o "remove".', details: ['action'] });
+      return;
+    }
+    const wantAdd = action === 'add';
+
     const id = sanitizeParam(req.params.id);
     let need = memoryNeeds.find((item) => item.id === id);
 
@@ -314,16 +413,76 @@ app.post(
     }
 
     const target: HelpNeed = need;
-    target.supportersCount += 1;
-
+    const supporters = getSupporterSet(target.id);
     const client = getSupabaseClient();
+
+    let handledInDb = false;
+    let delta = 0;
+
     if (client) {
-      await withSupabaseRetry('Supabase update help_needs', () =>
-        client.from('help_needs').update({ supporters_count: target.supportersCount }).eq('id', id),
-      );
+      if (wantAdd) {
+        // `ignoreDuplicates` sobre la PK (need_id, user_id): insertar dos
+        // veces no crea filas duplicadas ni vuelve a sumar el contador.
+        const { data, error } = await withSupabaseRetry<{ need_id: string }[]>(
+          'Supabase insert need_supporters',
+          () =>
+            client
+              .from('need_supporters')
+              .upsert(
+                { need_id: target.id, user_id: user.userId },
+                { onConflict: 'need_id,user_id', ignoreDuplicates: true },
+              )
+              .select('need_id'),
+        );
+        if (!error) {
+          handledInDb = true;
+          supporters.add(user.userId);
+          if (Array.isArray(data) && data.length > 0) delta = 1;
+        }
+      } else {
+        const { data, error } = await withSupabaseRetry<{ need_id: string }[]>(
+          'Supabase delete need_supporters',
+          () =>
+            client
+              .from('need_supporters')
+              .delete()
+              .eq('need_id', target.id)
+              .eq('user_id', user.userId)
+              .select('need_id'),
+        );
+        if (!error) {
+          handledInDb = true;
+          supporters.delete(user.userId);
+          if (Array.isArray(data) && data.length > 0) delta = -1;
+        }
+      }
+
+      if (handledInDb && delta !== 0) {
+        target.supportersCount = Math.max(0, target.supportersCount + delta);
+        await withSupabaseRetry('Supabase update help_needs', () =>
+          client.from('help_needs').update({ supporters_count: target.supportersCount }).eq('id', id),
+        );
+      }
     }
 
-    res.json({ success: true, count: target.supportersCount });
+    if (!handledInDb) {
+      // Sin base de datos (o `need_supporters` aún sin crear): toggle local
+      // idempotente, el mismo comportamiento que con la tabla disponible.
+      if (wantAdd && !supporters.has(user.userId)) {
+        supporters.add(user.userId);
+        target.supportersCount += 1;
+      } else if (!wantAdd && supporters.has(user.userId)) {
+        supporters.delete(user.userId);
+        target.supportersCount = Math.max(0, target.supportersCount - 1);
+      }
+    }
+
+    const payload: SupportResponse = {
+      success: true,
+      count: target.supportersCount,
+      supported: supporters.has(user.userId),
+    };
+    res.json(payload);
   }),
 );
 

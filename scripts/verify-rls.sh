@@ -11,6 +11,8 @@
 #        · anon      → lee, no inserta, no borra
 #        · authenticated con token  → inserta
 #        · authenticated sin token  → no inserta
+#        · need_supporters → sin políticas (solo el backend) y con clave
+#          primaria que impide apoyos duplicados
 #
 # Requiere: initdb, pg_ctl y psql en el PATH (PostgreSQL 14+).
 # Uso:  npm run verify:rls   (o: bash scripts/verify-rls.sh)
@@ -81,9 +83,21 @@ psql -Atc "SELECT '  ' || tablename || ' | ' || policyname || ' | ' || cmd
 count=$(psql -Atc "SELECT count(*) FROM pg_policies WHERE schemaname='public';")
 [ "$count" = "6" ] || { echo "FALLO: hay $count políticas, se esperaban 6"; fail=1; }
 
-step "RLS habilitado en ambas tablas"
-psql -Atc "SELECT '  ' || relname || ' = ' || relrowsecurity FROM pg_class
-           WHERE relname IN ('help_points','help_needs') ORDER BY relname;"
+step "RLS habilitado en las tres tablas"
+rls=$(psql -Atc "SELECT relname || '=' || relrowsecurity FROM pg_class
+           WHERE relname IN ('help_points','help_needs','need_supporters') ORDER BY relname;")
+echo "$rls" | sed 's/^/  /'
+if [ "$(echo "$rls" | grep -c '=t')" = "3" ]; then
+  echo "  OK"
+else
+  echo "  FALLO: RLS desactivado en alguna tabla"; fail=1
+fi
+
+step "need_supporters: sin políticas (solo la SERVICE ROLE accede)"
+ns_policies=$(psql -Atc "SELECT count(*) FROM pg_policies
+                         WHERE schemaname='public' AND tablename='need_supporters';")
+echo "  politicas: $ns_policies (esperadas: 0)"
+[ "$ns_policies" = "0" ] || { echo "  FALLO: hay políticas donde no deben existir"; fail=1; }
 
 step "Semilla mínima"
 psql -v ON_ERROR_STOP=1 -q -c "
@@ -132,6 +146,41 @@ if psql -Atc "SET ROLE authenticated;
 else
   echo "  FALLO: el INSERT sin token pasó"; fail=1
 fi
+
+step "6) need_supporters: anon ni lee ni escribe apoyos"
+rows=$(psql -Atc "SET ROLE anon; SELECT count(*) FROM need_supporters; RESET ROLE;" 2>&1 | grep -E '^[0-9]+$' | head -1)
+if [ "$rows" = "0" ]; then
+  echo "  OK: anon ve 0 filas"
+else
+  echo "  FALLO: anon leyó $rows apoyos"; fail=1
+fi
+
+if psql -Atc "SET ROLE anon;
+  INSERT INTO need_supporters (need_id, user_id) VALUES ('x1','user_falso');
+  RESET ROLE;" >/dev/null 2>&1; then
+  echo "  FALLO: el INSERT de anon en need_supporters pasó"; fail=1
+else
+  echo "  OK: INSERT de anon bloqueado"
+fi
+
+if psql -Atc "SET ROLE authenticated;
+  INSERT INTO need_supporters (need_id, user_id) VALUES ('x1','11111111-1111-4111-8111-111111111111');
+  RESET ROLE;" >/dev/null 2>&1; then
+  echo "  FALLO: el INSERT autenticado pasó (solo debe escribir el backend)"; fail=1
+else
+  echo "  OK: solo el backend (service_role) escribe apoyos"
+fi
+
+step "7) un usuario = un apoyo (clave primaria need_id+user_id)"
+psql -v ON_ERROR_STOP=1 -q -c "INSERT INTO need_supporters (need_id, user_id) VALUES ('x1','user_a');"
+if psql -Atc "INSERT INTO need_supporters (need_id, user_id) VALUES ('x1','user_a');" >/dev/null 2>&1; then
+  echo "  FALLO: se aceptó el apoyo duplicado"; fail=1
+else
+  echo "  OK: apoyo duplicado rechazado"
+fi
+psql -Atc "INSERT INTO need_supporters (need_id, user_id) VALUES ('x1','user_b');" >/dev/null
+psql -Atc "SELECT '  apoyos de x1 registrados: ' || count(*) FROM need_supporters WHERE need_id='x1';"
+[ "$(psql -Atc "SELECT count(*) FROM need_supporters WHERE need_id='x1';")" = "2" ] || { echo "  FALLO: se esperaban 2 apoyos"; fail=1; }
 
 echo
 if [ "$fail" -eq 0 ]; then echo "RESULTADO: esquema y politicas RLS correctas [OK]"; else echo "RESULTADO: hay fallos [ERROR]"; fi

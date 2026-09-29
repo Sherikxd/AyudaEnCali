@@ -5,6 +5,7 @@ import { BottomNav } from './components/BottomNav';
 import { ClerkSync } from './components/ClerkSync';
 import { ReportModal } from './components/ReportModal';
 import { LocationModal } from './components/LocationModal';
+import { AuthModal } from './components/AuthModal';
 
 // Code splitting por pestaña: solo se descarga la vista que el usuario abre
 // (Leaflet, por ejemplo, solo viaja con la vista del mapa).
@@ -24,7 +25,14 @@ const ViewFallback: React.FC = () => (
 );
 
 const AppContent: React.FC = () => {
-  const { activeTab, isLocationModalOpen, setIsLocationModalOpen } = useApp();
+  const {
+    activeTab,
+    isLocationModalOpen,
+    setIsLocationModalOpen,
+    isAuthModalOpen,
+    closeAuthModal,
+    authModalMessage,
+  } = useApp();
 
   return (
     <div className="min-h-screen bg-white text-slate-900 flex flex-col font-sans selection:bg-orange-500 selection:text-white">
@@ -46,6 +54,13 @@ const AppContent: React.FC = () => {
       <LocationModal
         isOpen={isLocationModalOpen}
         onClose={() => setIsLocationModalOpen(false)}
+      />
+      {/* Registro comunitario: lo piden las acciones que exigen cuenta
+          (publicar necesidad, reportar punto, comentar…). */}
+      <AuthModal
+        isOpen={isAuthModalOpen}
+        onClose={closeAuthModal}
+        titleMessage={authModalMessage}
       />
     </div>
   );

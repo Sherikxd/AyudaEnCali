@@ -21,6 +21,20 @@ import { errorMessage, logger } from './logger';
 
 let warnedMissingKey = false;
 
+/**
+ * Margen de reloj al comparar `nbf`/`exp` (opción `clockSkewInMs` de Clerk).
+ *
+ * Si el reloj del servidor va por detrás (común en máquinas de desarrollo
+ * sin NTP), Clerk rechaza tokens recién emitidos con "not before date en el
+ * futuro" y el usuario ve un 401 pese a tener sesión. Un minuto de margen es
+ * conservador: como mucho, un token de sesión de 60 s sigue aceptándose dos
+ * minutos. En despliegues con NTP el margen no aporta ni resta nada.
+ */
+const CLOCK_SKEW_MS = 60_000;
+
+/** Evita inundar el log si llegan seguidos tokens rechazados. */
+let lastTokenWarnAt = 0;
+
 function getSecretKey(): string | null {
   const key = process.env.CLERK_SECRET_KEY?.trim();
   if (!key) {
@@ -59,11 +73,19 @@ export async function getAuthenticatedUser(req: Request): Promise<AuthUser | nul
   if (!secretKey || !token) return null;
 
   try {
-    const payload = await verifyToken(token, { secretKey });
+    const payload = await verifyToken(token, { secretKey, clockSkewInMs: CLOCK_SKEW_MS });
     const userId = payload?.sub;
     return typeof userId === 'string' && userId ? { userId } : null;
   } catch (error) {
-    logger.debug('Token de Clerk rechazado:', errorMessage(error));
+    // El detalle (p. ej. "nbf en el futuro", firma inválida) ayuda a
+    // diagnosticar 401 en despliegues, pero no debe inundar el log.
+    const detail = errorMessage(error);
+    if (Date.now() - lastTokenWarnAt > 60_000) {
+      lastTokenWarnAt = Date.now();
+      logger.warn('Token de Clerk rechazado:', detail);
+    } else {
+      logger.debug('Token de Clerk rechazado:', detail);
+    }
     return null;
   }
 }

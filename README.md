@@ -26,7 +26,9 @@ puntos de salud, y para publicar lo que el barrio necesita.
 - **Persistencia en dos niveles**: Supabase (PostgreSQL) con caché en memoria
   y `localStorage` como respaldo; la app sigue funcionando sin conexión a BD.
 - **Autenticación** con Clerk (inicio de sesión) + registro comunitario
-  local con roles (`ciudadano`, `voluntario`, `coordinador`).
+  local con roles (`ciudadano`, `voluntario`, `coordinador`); el modal de
+  registro también deja **entrar con una cuenta existente** en vez de crear
+  una nueva.
 - **Directorio de emergencias** de Cali (123, 132, 119, 144, 125…).
 
 ## Stack
@@ -122,7 +124,7 @@ que empiezan con `VITE_`.
 | `CARTO_API_KEY` | No | Capa base del mapa |
 | `VITE_CLERK_PUBLISHABLE_KEY` | Para auth | Clave **pública** de Clerk. El servidor la lee en runtime y la sirve en `/api/config` (sin recompilar); si además va como `--build-arg`, queda horneada en el bundle |
 | `CLERK_PUBLISHABLE_KEY` | No | Alias sin prefijo `VITE_` de la misma clave (también aceptado por el servidor) |
-| `CLERK_SECRET_KEY` | No | Clave secreta, solo servidor |
+| `CLERK_SECRET_KEY` | Sí (auth) | Clave secreta, **solo servidor**. Verifica las sesiones que exigen cuenta (apoyos). Si falta, el resto de la app funciona pero `/api/support/*` y `POST /api/needs/:id/support` responden `401` |
 
 > **Aviso sobre `VITE_*`**: esas variables se leen **al compilar** (`vite
 > build`) y quedan escritas en el JavaScript estático; definirlas después en
@@ -140,6 +142,7 @@ que empiezan con `VITE_`.
 | `npm start` | Sirve `dist/` en modo producción (`NODE_ENV=production`) |
 | `npm run preview` | Vista previa del build con `vite preview` |
 | `npm run lint` | Comprobación de tipos (`tsc --noEmit`, modo estricto) |
+| `npm run test:ui` | Test interactivo del modal de registro en jsdom (sin navegador) |
 | `npm run verify:rls` | Valida `supabase/schema.sql` y sus políticas RLS en un Postgres desechable |
 | `npm run db:setup` | Crea/actualiza las tablas de Supabase con la Management API |
 | `npm run db:seed` | Carga los datos iniciales (5 puntos, 3 necesidades); idempotente |
@@ -159,13 +162,21 @@ formato `{ "error": string, "details"?: string[] }`.
 | `POST` | `/api/points` | Crea un punto (validado, `400` si no pasa) |
 | `GET` | `/api/needs` | Necesidades publicadas |
 | `POST` | `/api/needs` | Crea una necesidad |
-| `POST` | `/api/needs/:id/support` | Suma un apoyo (`404` si no existe) |
+| `POST` | `/api/needs/:id/support` | Apoya (`add`) o retira (`remove`) el apoyo. **Exige sesión** (`401`); `400` si `action` no es válida, `404` si no existe. Devuelve `{ success, count, supported }` |
+| `GET` | `/api/support/mine` | IDs de las necesidades que apoyó la cuenta actual. **Exige sesión** (`401`) |
 | `GET` | `/api/comments?pointId=` | Comentarios (de un punto o todos) |
 | `POST` | `/api/comments` | Publica un comentario |
 | `POST` | `/api/chat` | Mensaje al asistente (Gemini o directorio local) |
 
 Límites: **15 req/min** en `/api/chat` y **60 req/min** por IP en las
 escrituras (cabeceras `RateLimit-*`, respuesta `429` al superarlo).
+
+**Rutas con sesión:** las marcadas como *exigen sesión* reciben el token de
+Clerk en la cabecera `Authorization: Bearer <token>` (en el cliente,
+`useAuth().getToken()` de `@clerk/clerk-react`). El servidor lo verifica
+contra las claves JWKS de Clerk con `CLERK_SECRET_KEY`; sin esa variable en
+el entorno, esas rutas responden `401` y dejan un aviso en el log. El ID del
+usuario nunca lo manda el cliente: sale del claim `sub` del JWT validado.
 
 Ejemplo:
 
@@ -181,10 +192,12 @@ curl -X POST http://localhost:3000/api/points \
 1. Crea un proyecto en Supabase y copia las credenciales a `.env`
    (`SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`).
 2. Crea el esquema (idempotente: repetirlo **nunca** borra datos) con una de
-   estas dos vías:
+   estas dos vías. Crea tres tablas: `help_points`, `help_needs` y
+   `need_supporters` (los apoyos individuales), más sus índices y políticas:
    - **Automática:** define `SUPABASE_ACCESS_TOKEN` en `.env`. El servidor
-     detecta que faltan las tablas y las crea solo (índices y políticas
-     incluidos). Para forzarlo en cualquier momento: `npm run db:setup`.
+     detecta que falta **cualquiera** de las tres (incluida una tabla nueva
+     al actualizar la app) y crea/actualiza el esquema solo. Para forzarlo en
+     cualquier momento: `npm run db:setup`.
    - **Manual:** pega `supabase/schema.sql` en el **SQL Editor** de Supabase
      (también lo sirve `GET /api/supabase/sql`).
 3. El servidor sondea el esquema al arrancar y repite el sondeo cada 30 s
@@ -205,6 +218,7 @@ curl -X POST http://localhost:3000/api/points \
 | Inserción autenticada | `authenticated` | `INSERT` con `auth.uid() NOT NULL` |
 | Actualización autenticada | `authenticated` | `UPDATE` en ambas tablas |
 | Eliminación | — | sin política: no se puede borrar vía API |
+| `need_supporters` | — | RLS activo y **sin políticas**: solo el backend (`service_role`) lee o escribe; ni `anon` ni `authenticated` ven quién apoyó qué |
 
 El backend escribe con `SUPABASE_SERVICE_ROLE_KEY`, que **bypasea RLS**: las
 operaciones de la app no dependen de las políticas, que funcionan como
@@ -220,6 +234,25 @@ rechazados por diseño y quedará un aviso en el log.
 Puedes comprobar todo lo anterior **sin tocar tu proyecto** con un Postgres
 local: `npm run verify:rls` levanta un clúster temporal, aplica el esquema dos
 veces y comprueba quién puede leer, insertar y borrar.
+
+### Apoyos (likes)
+
+- Solo quien tiene **cuenta** puede apoyar: el servidor exige el token de
+  Clerk en `Authorization` y lo verifica; sin sesión responde `401` (en la
+  UI, el corazón está apagado y dice "inicia sesión").
+- Cada cuenta da **un solo apoyo** por necesidad y puede retirarlo. La
+  unicidad la garantiza la clave primaria `(need_id, user_id)` de
+  `need_supporters`, no una comprobación de la aplicación: repetir `add` no
+  duplica filas ni suma dos veces, y `remove` nunca deja el contador en
+  negativo.
+- `help_needs.supporters_count` sigue siendo el contador visible (incluye
+  los apoyos históricos que no tienen usuario asociado) y **solo cambia**
+  cuando se inserta o borra una fila en `need_supporters`.
+- `GET /api/support/mine` devuelve los IDs apoyados por la cuenta actual
+  (para pintar el corazón relleno); nunca se filtra en las rutas públicas
+  qué usuario apoyó qué.
+- Sin base de datos disponible, el mismo conmutador funciona sobre la caché
+  en memoria (se pierde al reiniciar, igual que el resto de esa caché).
 
 ## Mejores prácticas aplicadas
 
@@ -255,6 +288,12 @@ veces y comprueba quién puede leer, insertar y borrar.
 
 - TypeScript en modo estricto + `noUnusedLocals`/`noUnusedParameters`
   (`npm run lint` debe pasar antes de mergear).
+- Test interactivo de UI sin navegador (`npm run test:ui`): jsdom monta el
+  árbol real (Clerk → contexto → `Header`/`AuthModal`/`ReportModal`) y
+  simula los clics: abrir con *Reportar Ayuda*, cerrar con `Escape` o
+  *Cancelar* sin disparar la acción pendiente, validación del formulario,
+  alta de cuenta que ejecuta el callback y apertura directa del reportero
+  cuando ya hay cuenta.
 - Tipos compartidos entre cliente y servidor (`src/types/index.ts`) como
   contrato único de la API; sin `any` en el código de la aplicación.
 - Validadores, mappers y logs en módulos pequeños y reutilizables.

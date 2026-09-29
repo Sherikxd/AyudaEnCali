@@ -63,6 +63,8 @@ interface AppContextType {
   setReportModalType: (type: 'point' | 'need') => void;
   isAuthModalOpen: boolean;
   setIsAuthModalOpen: (open: boolean) => void;
+  /** Cierra el modal de registro descartando la acción pendiente. */
+  closeAuthModal: () => void;
   authModalMessage: string;
   openAuthModal: (message?: string, onSuccess?: () => void) => void;
   mapCenter: [number, number];
@@ -212,6 +214,18 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     setAuthModalMessage(message || 'Para realizar esta acción necesitas crear una cuenta comunitaria.');
     setAuthCallback(() => onSuccess || null);
     setIsAuthModalOpen(true);
+  };
+
+  /**
+   * Cierra el modal de registro **deshaciendo** la acción pendiente: si el
+   * usuario cancela, el callback guardado por `openAuthModal` no debe
+   * ejecutarse en un registro posterior (p. ej. abrir el reportero minutos
+   * más tarde sin que lo haya pedido). Al registrarse, `registerUser` es
+   * quien dispara el callback y lo limpia.
+   */
+  const closeAuthModal = () => {
+    setIsAuthModalOpen(false);
+    setAuthCallback(null);
   };
 
   const registerUser = (data: {
@@ -666,6 +680,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         setReportModalType,
         isAuthModalOpen,
         setIsAuthModalOpen,
+        closeAuthModal,
         authModalMessage,
         openAuthModal,
         mapCenter,

@@ -1,8 +1,9 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
+import { useClerk } from '@clerk/clerk-react';
 import { useApp } from '../context/AppContext';
 import { CALI_BARRIOS } from '../data/initialData';
 import { UserRole } from '../types';
-import { X, UserPlus, Heart, CheckCircle2 } from 'lucide-react';
+import { X, UserPlus, Heart, CheckCircle2, LogIn } from 'lucide-react';
 
 interface AuthModalProps {
   isOpen: boolean;
@@ -18,6 +19,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   onSuccess,
 }) => {
   const { registerUser } = useApp();
+  const { openSignIn } = useClerk();
 
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
@@ -27,7 +29,33 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   const [organization, setOrganization] = useState('');
   const [error, setError] = useState('');
 
+  // Al reabrir no se arrastra el mensaje de error de un intento anterior.
+  useEffect(() => {
+    if (isOpen) setError('');
+  }, [isOpen]);
+
+  // Escape cierra el modal (convención de accesibilidad).
+  useEffect(() => {
+    if (!isOpen) return undefined;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [isOpen, onClose]);
+
   if (!isOpen) return null;
+
+  /**
+   * Entrar con la sesión de Clerk (la identidad real) en vez de crear una
+   * cuenta local: se cierra **este** modal primero para no dejar dos capas
+   * apiladas y se descarta la acción pendiente (`onClose` → `closeAuthModal`).
+   * Al volver, `ClerkSync` alinea el perfil local con la sesión.
+   */
+  const handleSignIn = () => {
+    onClose();
+    openSignIn();
+  };
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -207,6 +235,22 @@ export const AuthModal: React.FC<AuthModalProps> = ({
             >
               <CheckCircle2 className="w-4 h-4" />
               <span>Activar mi Cuenta</span>
+            </button>
+          </div>
+
+          {/* Cuentas existentes: entrar con la sesión de Clerk en lugar de
+              rellenar el formulario de registro comunitario. */}
+          <div>
+            <button
+              type="button"
+              onClick={handleSignIn}
+              title="Iniciar sesión con tu cuenta existente"
+              className="w-full flex items-center justify-center gap-2 px-3 py-2.5 rounded-xl border border-dashed border-slate-200 text-xs font-bold text-slate-600 hover:text-slate-900 hover:bg-slate-50 transition-colors"
+            >
+              <LogIn className="w-3.5 h-3.5 text-orange-600 shrink-0" />
+              <span>
+                ¿Ya tienes cuenta? <span className="text-orange-700">Ingresa con tu cuenta</span>
+              </span>
             </button>
           </div>
         </form>

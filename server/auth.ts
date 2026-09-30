@@ -1,6 +1,7 @@
-import type { Request, Response } from 'express';
+import type { IncomingHttpHeaders } from 'node:http';
 import { verifyToken } from '@clerk/backend';
 import { errorMessage, logger } from './logger';
+import type { JsonResponder } from './http';
 
 /**
  * Verificación de sesiones de Clerk en el servidor.
@@ -50,7 +51,7 @@ function getSecretKey(): string | null {
 }
 
 /** Extrae el token de la cabecera `Authorization: Bearer <token>`. */
-function bearerToken(req: Request): string | null {
+function bearerToken(req: AuthRequest): string | null {
   const header = req.headers.authorization;
   if (typeof header !== 'string') return null;
   const match = /^Bearer\s+(.+)$/i.exec(header.trim());
@@ -63,11 +64,19 @@ export interface AuthUser {
 }
 
 /**
+ * Petición con lo mínimo para autenticar: las cabeceras. Cumplen tanto
+ * `express.Request` como la `ApiRequest` de los núcleos de ruta.
+ */
+export interface AuthRequest {
+  headers: IncomingHttpHeaders;
+}
+
+/**
  * Valida la sesión de la petición y devuelve el usuario autenticado, o
  * `null` si no hay sesión (sin cabecera, token expirado, instancia ajena…).
  * Los detalles del error solo van a logs: al cliente responde 401 genérico.
  */
-export async function getAuthenticatedUser(req: Request): Promise<AuthUser | null> {
+export async function getAuthenticatedUser(req: AuthRequest): Promise<AuthUser | null> {
   const secretKey = getSecretKey();
   const token = bearerToken(req);
   if (!secretKey || !token) return null;
@@ -91,7 +100,7 @@ export async function getAuthenticatedUser(req: Request): Promise<AuthUser | nul
 }
 
 /** Responde el 401 estándar de las rutas que exigen sesión. */
-export function respondUnauthorized(res: Response, message?: string): void {
+export function respondUnauthorized(res: JsonResponder, message?: string): void {
   res.status(401).json({
     error: message ?? 'Debes iniciar sesión para realizar esta acción.',
   });

@@ -55,7 +55,7 @@ puntos de salud, y para publicar lo que el barrio necesita.
 | Capa | Tecnologías |
 | --- | --- |
 | Frontend | React 19 + TypeScript, Vite 8, Tailwind CSS 4, Leaflet, lucide-react |
-| Backend | Node.js + Express (tipo `server.ts` ejecutado con `tsx`) |
+| Backend | Node.js + Express (`server.ts` con `tsx`; en Vercel, la función `api/index.ts`) |
 | IA | Google Gemini (`@google/genai`) |
 | Datos | Supabase (PostgreSQL + RLS) con caché en memoria |
 | Auth | Clerk (`@clerk/clerk-react`) |
@@ -65,8 +65,9 @@ puntos de salud, y para publicar lo que el barrio necesita.
 
 ```
 .
-├── server.ts              # API REST + servidor Vite/estático (entry point)
+├── server.ts              # entry local/Docker/Cloud Run: Vite/estático + listen
 ├── server/
+│   ├── app.ts             # app Express compartida (API + rutas) · la que usa Vercel
 │   ├── middleware.ts       # headers de seguridad, 404, errores, asyncHandler
 │   ├── rateLimit.ts        # limitador de tasa por IP (en memoria)
 │   ├── validation.ts       # validación/saneamiento de todos los payloads
@@ -91,9 +92,12 @@ puntos de salud, y para publicar lo que el barrio necesita.
 │   ├── data/               # datos iniciales y barrios de Cali
 │   ├── types/index.ts      # dominio + contrato de la API (compartido)
 │   └── utils/              # logger, storage seguro, escape de HTML
+├── api/
+│   └── index.ts           # función de Vercel: exporta la app como default
 ├── public/images/          # imágenes estáticas (visibles en producción)
 ├── index.html
 ├── vite.config.ts
+├── vercel.json             # Vercel: build (Vite → dist), rewrites de /api, caché
 ├── Dockerfile               # multi-stage: build con Vite + imagen mínima de runtime
 ├── .dockerignore            # sin .env (secretos) ni node_modules dentro de la imagen
 └── tsconfig.json           # strict + noUnusedLocals/Parameters
@@ -367,11 +371,152 @@ npm start       # sirve la API y dist/ con NODE_ENV=production
 El mismo `server.ts` sirve la API y los archivos estáticos, así que basta
 con desplegar un único proceso (Cloud Run, Railway, Fly.io…). Configura las
 variables de entorno en la plataforma; `PORT` la inyecta el runtime.
+Para **Vercel** (gratis) hay una sección propia debajo: ahí el proceso no lo
+monta `server.ts`, sino **una función por ruta** (`api/*.ts`), todas
+compiladas desde los mismos núcleos de `server/handlers/`.
 
 Con Supabase configurado, el primer arranque crea las tablas solo (si hay
 `SUPABASE_ACCESS_TOKEN`); para cargar los datos iniciales ejecuta una vez
 `npm run db:seed`. Las políticas RLS de `supabase/schema.sql` ya protegen
 las escrituras de cara al exterior.
+
+### Vercel (plan Hobby, gratis)
+
+La API se despliega como **una función por ruta**: cada `api/*.ts` envuelve
+con `createApiRoute()` un núcleo de `server/handlers/` (el mismo código que
+ejecuta Express), y `vercel.json` reescribe las rutas de la app a su
+función. **Docker y Cloud Run no cambian**: siguen arrancando `server.ts`.
+
+Funciones y rutas (los métodos no listados responden `404` JSON, igual que
+Express):
+
+| Función (`api/…`) | Ruta de la app | Métodos |
+| --- | --- | --- |
+| `health.ts` | `GET /api/health` | GET |
+| `config.ts` | `GET /api/config` | GET |
+| `sql.ts` | `GET /api/supabase/sql` | GET |
+| `points.ts` | `GET · POST /api/points` | GET, POST |
+| `needs.ts` | `GET · POST /api/needs` | GET, POST |
+| `needs-support.ts` | `POST /api/needs/:id/support` (el `id` llega como `?id=` gracias al rewrite) | POST |
+| `support-mine.ts` | `GET /api/support/mine` | GET |
+| `comments.ts` | `GET · POST /api/comments` | GET, POST |
+| `chat.ts` | `POST /api/chat` | POST |
+| `index.ts` | cualquier otra `…/api/*` | → **404 JSON** |
+
+Los rewrites de `vercel.json` van de lo específico al catch-all
+(`/api/supabase/sql`, `/api/support/mine`, `/api/needs/:id/support`,
+`/api/:path*` → `/api/index`) y arrastran `_orig=<ruta canónica>` para que
+los mensajes `Ruta no encontrada:` sean idénticos a los de Express. El
+fichero `api/index.ts` **no** exporta la app Express (solo el 404).
+
+Pasos:
+
+1. Sube el repositorio a GitHub **sin `.env`** (ya está en `.gitignore`).
+2. En [vercel.com/new](https://vercel.com/new) → *Import Git Repository* →
+   selecciona el repo y dale nombre. Con `framework: "vite"` en `vercel.json`
+   Vercel construye el frontend (`npm install` + `vite build` → `dist/`) y
+   además empaqueta **las 10 funciones** de `api/`.
+3. Antes del primer deploy, en *Project → Settings → Environment Variables*
+   añade las variables de la tabla de abajo.
+4. *Deploy* y comprueba el humo (o déjalo en manos del CI, ver abajo):
+   - `/api/health` → `200 {"status":"ok",…}`
+   - `/api/config` → `200` con `clerkPublishableKey`
+   - `/api/supabase/sql` → `200` (ruta de dos niveles: es la que obliga al
+     rewrite de `vercel.json`)
+   - `POST /api/needs/<id>/support` → `401` sin sesión (**no** `404`: comprueba
+     que el rewrite entrega el `id`)
+   - `/api/needs-support`, `/api/support-mine` → `404` en JSON (espejos
+     bloqueados, igual que Express)
+   - `/api/ninguna` → `404` en JSON (`Ruta no encontrada: GET /ninguna`,
+     desde el fallback `api/index.ts`)
+   - `/ruta-inexistente` → `404` con `dist/404.html`
+   - `/assets/*.js` → `cache-control: public, max-age=31536000, immutable`
+
+   Todo eso (más cuerpo JSON malformado → `400`, contenido no-JSON → `400`
+   con `details: {}`, y paridad de mensajes de error) está automatizado:
+
+   ```bash
+   npm run smoke:vercel                 # humo hermético en local (35 checks)
+   SMOKE_BASE_URL=https://<app>.vercel.app npm run smoke:vercel   # contra un deploy real
+   ```
+
+   El script fuerza `VERCEL=1` por defecto (sin leer `.env`); pasa
+   `SMOKE_WITH_ENV=1` si quieres el humo local con tus variables reales.
+
+> **Gate antes de desplegar**: `.github/workflows/ci.yml` ejecuta en cada
+> push/PR `npm run lint` → `npx vite build` → `npm run test:ui` →
+> `npm run smoke:vercel` (y `npm run verify:rls` solo si cambió
+> `supabase/schema.sql`). Vercel solo corre `vite build`, así que este
+> workflow es lo que impide subir a producción con tipos o tests rotos.
+
+Variables de entorno en Vercel (panel, *Environment Variables*):
+
+| Variable | Build | Runtime | Para qué |
+| --- | :-: | :-: | --- |
+| `VITE_CLERK_PUBLISHABLE_KEY` | ✅ | ✅ | Clave pública de Clerk: **horneada en el bundle** (prefijo `VITE_`, se lee en `vite build`) y además la sirve `/api/config` en runtime |
+| `CLERK_SECRET_KEY` | – | ✅ | Solo servidor: verifica el JWT. Sin ella, apoyos y escrituras responden `401` |
+| `CLERK_PUBLISHABLE_KEY` | – | ✅ | Alias sin `VITE_` aceptado por `/api/config` si no está la otra |
+| `SUPABASE_URL` | – | ✅ | Proyecto Supabase. Sin él, la API responde desde la caché en memoria |
+| `SUPABASE_SERVICE_ROLE_KEY` | – | ✅ | Escrituras del servidor (nunca en el cliente) |
+| `SUPABASE_ANON_KEY` | – | ✅ | Respaldo si falta la de servicio |
+| `SUPABASE_ACCESS_TOKEN` | – | Opcional | Management API: el servidor crea las tablas si faltan |
+| `GEMINI_API_KEY` | – | ✅ | Habilita al asistente; sin ella usa el directorio local |
+| `GEMINI_MODEL` | – | Opcional | Modelo a usar (`gemini-3.8-flash` por defecto) |
+| `CARTO_API_KEY` | – | Opcional | Capa base del mapa |
+| `APP_URL` | – | Opcional | Hoy solo está en `.env.example`; el código no la lee |
+
+**No hace falta** `PORT` (la función no escucha), `NODE_ENV` (Vercel pone
+`production`) ni `CLOUDINARY_URL` (solo la usa `npm run cdn:upload`, en local).
+Define las variables tanto en *Production* como en *Preview* si vas a probar
+deploys de rama.
+
+Detalles del despliegue:
+
+- **Plan Hobby = uso no comercial**: 100 GB de tráfico, 1 M de peticiones de
+  borde, 1 M de invocaciones de función, 4 CPU-h, 300 s por función y unos
+  100 builds al día. Suficiente para el proyecto, pero no permite monetizar.
+  Además limita a **12 funciones por deployment**: con las 10 actuales quedan
+  2 de margen.
+- **Escalado y cold starts**: cada función se instancia por su cuenta, así
+  que un pico en `/api/chat` no arrastra al resto. El coste es que la
+  primera petición de cada función tras un despliegue (o tras la pausa por
+  inactividad) paga su propio *cold start* (~250-500 ms de arranque del
+  módulo: dotenv, cliente Supabase y límites en memoria) en lugar de uno
+  solo compartido.
+- **Rate limit y cachés son por función**: viven en memoria y cada función
+  tiene la suya (mismo `max`, distinta cuenta). Fluid conserva las
+  instancias entre peticiones calientes; un *cold start* vacía la caché y
+  reinicia los contadores: no pierde datos porque la fuente de verdad es
+  Supabase. La consecuencia práctica es que **el límite global de Express se
+  convierte en límites independientes por función**:
+
+  | Límite | Express (un proceso) | Vercel (una función por ruta) |
+  | --- | --- | --- |
+  | Escrituras (`writeLimiter`, 60/min por IP) | **una sola cuenta** compartida por las 4 rutas (`points`, `needs`, `needs/:id/support`, `comments`): 60 escrituras/min en total | **4 cuentas independientes** → hasta 60/min *por ruta*, o sea 240/min en total |
+  | Asistente (`chatLimiter`, 15/min por IP) | 15/min en `/api/chat` | idéntico: `chat.ts` es su propia función |
+
+  Es decir, en Vercel es *más permisivo* (cuatro veces más escrituras por
+  minuto permitidas al mismo IP) pero nunca más restrictivo: nadie que
+  funcionaba en Express deja de funcionar. Si quieres endurecerlo, sube el
+  `max` de `writeLimiter` en `server/limiters.ts` (afecta a ambos entornos)
+  o añade un *middleware* de borde en `vercel.json`.
+- **Los estáticos los sirve el CDN** desde `dist/` (`express.static` se
+  ignora en Vercel): las cabeceras de `/assets` y de imágenes las pone
+  `vercel.json`, con la misma caché que antes.
+- **404**: `public/404.html` se copia a `dist/404.html` con `vite build` y
+  Vercel lo sirve con estado **404** cuando la ruta no coincide con ningún
+  fichero (misma regla que GitHub Pages). No hay *rewrite* de SPA a propósito:
+  la app no tiene enrutador. Los 404 de `/api/*` sí son JSON, desde la
+  función `api/index.ts`.
+- **`compression()` se omite en Vercel** (en `server/app.ts`, bajo la guarda
+  `!process.env.VERCEL`): el borde ya comprime y ahorra CPU de las 4 CPU-h.
+- **Espejos de filesystem bloqueados**: `/api/sql`, `/api/support-mine` y
+  `/api/needs-support` coinciden con el nombre de un fichero de `api/`, así
+  que Vercel los sirve *sin pasar por los rewrites*. Para que respondan igual
+  que en Express, cada núcleo comprueba que la petición llegó por su ruta
+  canónica y, si no, devuelve **404 JSON** (`server/handlers/supportMine.ts`
+  y `needsSupport.ts`, con el flag `req.rewritten` que marca
+  `server/vercel.ts`). El cliente solo usa las rutas canónicas de la tabla.
 
 ### Docker
 

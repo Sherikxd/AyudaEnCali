@@ -173,3 +173,115 @@ del JWT y spoof ignorado, 409 duplicado) · T2 ✅ (comentario persiste tras
 reiniciar) · T3 ✅ (1 → 1 → 2 → 0 = `count(*)`) · T4 ✅ (503×3, nunca 201) ·
 T5–T8 ✅ por revisión de código. **9 riesgos no bloqueantes** (el principal:
 `test:ui` no cubre T5–T8). Informe: `memoria/03-verificacion.md`.
+
+## T9 · Despliegue en Vercel — **agente-backend** · ✅
+
+Adaptar el proyecto a desplegar en **Vercel (plan Hobby, gratis)** sin romper
+el despliegue actual (local, Docker, Cloud Run): Cloud Run se encareció y se
+busca alternativa gratuita.
+
+**Hacer:**
+- `server/app.ts` con la app Express compartida (rutas, límites, 404 de
+  `/api`), **sin** `vite` ni `express.static`; `server.ts` se queda con
+  Vite/estáticos/`listen` y no cambia su comportamiento.
+- `api/index.ts` exporta la app como *default* (patrón oficial de Vercel) y
+  `vercel.json` (`framework: vite`, build → `dist`, rewrite
+  `/api/:path* → /api`, caché de assets), validado contra el schema oficial.
+- Documentación: sección «Despliegue en Vercel» en `README.md` con la tabla
+  de variables, `.gitignore` con `.vercel/`, `.env.example` y entrada en
+  `decisiones.md`.
+
+**Hecho cuando:** `lint` + `vite build` + `test:ui` en verde, humo local
+idéntico al anterior y humo de la función (`api/index.ts`) con las rutas de
+uno y dos niveles respondiendo bien.
+
+**Resultado (2026-09-29):** ✅ `lint` · `vite build` · `test:ui` 40/40 «TODO OK»
+· humo local en :3125 (200/404+404.html/gzip+immutable/401) · humo de la
+función en :3126 con `VERCEL=1` (9/9: health, config, points, needs,
+comments, `/api/supabase/sql` 200, POST 401, `/api/xyz` 404 JSON) ·
+`vercel.json` válido contra el schema oficial · cadena de imports de
+`api/index.ts` sin `vite`. Detalle y riesgos en `memoria/04-vercel.md`.
+
+## T10 · Una función Vercel por ruta — **agente-backend** · ✅
+
+T9 desplegó **una sola** función Express (`api/index.ts` exporta la app):
+toda la API comparte una instancia y el plan Hobby limita a 12 funciones
+por deployment. Además, `api/index.ts` exportando la app impide que ese
+fichero sirva para otra cosa.
+
+**Hacer:**
+- Extraer los cuerpos de ruta de `server/app.ts` a **núcleos
+  framework-agnósticos** en `server/handlers/*.ts`: reciben un `ApiRequest`
+  normalizado (método, path sin `/api`, headers, query, body, IP) y
+  responden `{status, body}` o `null` si ya respondieron en el `res`
+  (401/429/400/errores de BD). Ningún import de Express ni de Vercel.
+- `server/app.ts` queda como **adaptador Express** (router montado en `/api`,
+  conservando la línea `if (!process.env.VERCEL) app.use(compression());`).
+- Una función por ruta en `api/*.ts` (`health`, `config`, `sql`, `points`,
+  `needs`, `needs-support`, `support-mine`, `comments`, `chat`) envueltas por
+  `createApiRoute` (`server/vercel.ts`), y `api/index.ts` como **fallback
+  404 JSON** (ya no exporta la app).
+- `vercel.json`: rewrites específicos **antes** del catch-all
+  (`/api/supabase/sql`, `/api/support/mine`, `/api/needs/:id/support`,
+  `/api/:path*`) aportando `_orig=<ruta canónica>`; sin `functions` ni
+  `maxDuration`; validado contra el schema oficial.
+- **Paridad obligatoria**: mismos status, cuerpos, cabeceras `RateLimit-*`
+  y tope de 1 MB que el Express actual.
+
+**Hecho cuando:** `lint` + `vite build` + `test:ui` en verde; matriz de
+paridad local (Express nuevo) idéntica a la línea base; y la misma matriz
+contra las funciones de `api/*.ts` idéntica, incluidos los 404 por método.
+
+**Resultado (2026-09-30):** ✅ `lint` · `vite build` · `test:ui` 40/40 «TODO
+OK» · matriz de 43 peticiones: **41/42 líneas byte a byte** con la línea
+base pre-refactor (las 2 restantes: longitud aleatoria del chat con Gemini
+en 503 y `ce=gzip` propio de compression) · matriz `--api-only` Express vs
+funciones: idéntica salvo `ce=gzip` y chat · harness que emula el routing de
+Vercel probado en 4 escenarios (destino, URL original, sin pre-parseo, sin
+`:id` automático): **paridad exacta en los 4** · `vercel.json` válido contra
+`openapi.vercel.sh` · sin `vite`/`express.static` en `server/`+`api/` (solo
+el comentario de la advertencia) · servidores propios terminados. Detalle
+en `memoria/05-funciones-vercel.md`.
+
+## T13 · Remediación P1 Vercel — **agente-backend** · ✅
+
+La verificación independiente T12 (`memoria/07-verificacion-t10.md`) encontró
+dos P1, un P2, los KO de espejo y los gaps R5/R6. Cerrarlos **sin romper la
+paridad** Express ↔ funciones.
+
+**Hacer:**
+- **P1-1** · `readJsonBody` dentro del `try/catch` de `createApiRoute`
+  (y propio dentro de la función): JSON malformado → **400**
+  `{"error":"JSON inválido en el cuerpo de la petición."}`, no 500 ni colgado.
+- **P1-2** · `POST /api/needs/:id/support` debe funcionar en el primer
+  deploy: rewrite con `&id=:id` **explícito** + `resolveNeedId` path-primero
+  que solo acepta `query.id` vía rewrite.
+- **P1-3** · el chat debe cargar el contexto de Supabase (nunca servir la
+  semilla): `server/context.ts` con TTL 30 s, llamada en el núcleo y
+  `warmContext()` en `api/chat.ts`.
+- **P2** · unificar los `details` cuando no llega `content-type: json`
+  (`{}` igual que body-parser, no `undefined`).
+- **KO-1/KO-2** · bloquear los espejos de filesystem (`/api/support-mine`,
+  `/api/needs-support`) → **404** como Express, con el flag `rewritten`.
+- **R5** · `.github/workflows/ci.yml`: lint + build + test:ui + humo, con
+  `verify:rls` solo si cambió `supabase/schema.sql`.
+- **R6** · `scripts/smoke-vercel.mjs` + `npm run smoke:vercel` (35 checks;
+  `SMOKE_BASE_URL` contra un deploy real).
+- **README** · nota de rate limit (límites por función vs límite global de
+  Express) y espejos ya bloqueados.
+
+**Hecho cuando:** `lint` + `vite build` + `test:ui` 40/40 en verde;
+`smoke:vercel` 35/35; `vercel.json` válido contra el schema oficial; humo de
+Express en 3140 con los mismos status/cuerpos que las funciones.
+
+**Resultado (2026-09-30):** ✅ `lint` exit 0 · `vite build` `✓ built in 392ms`
+· `test:ui` **40/40 «TODO OK»** · `smoke:vercel` **35 comprobaciones · 0
+fallos** · `vercel.json` **VÁLIDO** (4 rewrites en orden, 10 funciones ≤ 12)
+· YAML del CI: 10 steps · Express en **3140**: JSON malformado → 400, apoyo
+sin sesión → 401, chat sin sesión → 200 (igual que antes), espejos → 404,
+`/api/xyz` → 404 JSON · PID 607589 (3124) intacto · `verify:rls` n/a (sin
+cambios en `schema.sql`). **Pendiente de un deploy real:** P1-1, P1-2 y KO-3
+se cierran con `SMOKE_BASE_URL=https://<app>.vercel.app npm run smoke:vercel`.
+Detalle en `memoria/08-remediacion-p1.md`.
+
+T14 · Re-verificación T13 — agente-verificacion — ✅

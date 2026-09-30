@@ -16,6 +16,7 @@
     "lint": "tsc --noEmit",
     "typecheck": "tsc --noEmit",
     "test:ui": "node --env-file-if-exists=.env scripts/test-authmodal.mjs",
+    "smoke:vercel": "node --import tsx scripts/smoke-vercel.mjs",
     "cdn:upload": "tsx scripts/upload-cloudinary.ts",
     "verify:rls": "bash scripts/verify-rls.sh",
     "db:setup": "tsx scripts/apply-schema.ts",

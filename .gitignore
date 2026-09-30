@@ -6,6 +6,9 @@ build/
 dist/
 coverage/
 
+# Vercel (`vercel link`): credenciales y ajustes del proyecto local
+.vercel/
+
 # Entorno (credenciales): nunca se versionan
 .env
 .env.local

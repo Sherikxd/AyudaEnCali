@@ -54,3 +54,75 @@ La SPA no usa rutas: cualquier URL que no sea un archivo devuelve
 invisible).
 *Por qué:* todavía no necesitamos rutas; cuando las haya (landings por
 barrio), será el momento de introducir un router.
+
+**2026-09-29 · Destino de despliegue: Vercel Hobby (gratis).**
+La app Express se comparte en `server/app.ts`; `api/index.ts` la exporta como
+*default* (guía oficial de Vercel) y `vercel.json` fija `framework: vite`,
+`buildCommand: vite build`, `outputDirectory: dist`, el rewrite
+`/api/:path* → /api` y las cabeceras de caché de `/assets`. `server.ts`
+sigue siendo la entrada de local/Docker/Cloud Run **sin ningún cambio de
+comportamiento**.
+*Descartado:* seguir en Cloud Run, que se encareció (contenedor + egress +
+balanceador superan con creces lo que cuesta el plan gratis).
+*Por qué:* misma BD (Supabase) e IdP (Clerk) sin tocar datos ni identidad,
+CDN con compresión, `404.html` con estado 404 y límites de sobra (100 GB de
+tráfico, 1 M invocaciones, 4 CPU-h, 100 builds/día). *Aviso:* el plan Hobby
+es **no comercial**: si el proyecto monetiza, toca pasar a Pro (o volver a
+un contenedor).
+
+**2026-09-30 · La API de Vercel pasa a una función por ruta (T10).**
+Los cuerpos de ruta de `server/app.ts` se extrajeron a **núcleos
+framework-agnósticos** (`server/handlers/*.ts`): reciben un `ApiRequest`
+normalizado y responden `{status, body}` (o `null` si ya escribieron en el
+`res`). Express (`server/app.ts`, router montado en `/api`) y las funciones
+`api/*.ts` (vía `createApiRoute` de `server/vercel.ts`) ejecutan el mismo
+código con el mismo orden — cabeceras → cuerpo máx 1 MB → límite de tasa →
+auth → núcleo — y la misma respuesta. `api/index.ts` ya **no** exporta la
+app: es el fallback 404 JSON (`Ruta no encontrada: <MÉTODO> <ruta sin /api>`).
+Los rewrites específicos de `vercel.json` (antes del catch-all `/api/:path*`)
+aportan `_orig=<ruta canónica>` para que los mensajes 404 y la extracción del
+id coincidan con los de Express en cualquier semántica de URL tras rewrite.
+*Descartado:* mantener la única función Express (funcionaba, pero concentraba
+toda la API en una instancia y no daba escalado ni aislamiento por ruta) y
+fijar `maxDuration` (sin `functions`/`maxDuration` en `vercel.json`, como
+acordado: 300 s por defecto del plan).
+*Por qué:* paridad verificada con una matriz de 43 peticiones (byte a byte
+salvo la compresión local y el texto no determinista del chat) + 4
+escenarios del emulador de routing de Vercel. *Aviso:* Hobby limita a
+**12 funciones por deployment**; con 10 hay 2 de margen, y los espejos de
+filesystem (`/api/sql`, `/api/support/mine`) responden en Vercel como su
+ruta canónica (Express responde 404 en esos espejos): no los usa el cliente.
+
+**2026-09-30 · El `id` del apoyo viaja explícito en el rewrite (T13).**
+`/api/needs/:id/support → /api/needs-support?_orig=needs/:id/support&id=:id`:
+el `id` se escribe a mano en el query además de dejar que
+`@vercel/routing-utils` lo deduzca, y `resolveNeedId()` es *path primero*,
+usando `query.id` solo cuando la petición trae `_orig` (`req.rewritten`).
+*Descartado:* confiar en la expansión implícita (caso KO-4 de T12: si el
+runtime no expande el query ni autoinyecta el parámetro, «apoyar» devolvía
+404 en el primer deploy) y pasar el id por cabecera (rompe la paridad con
+Express).
+*Por qué:* es una línea más de configuración a cambio de eliminar la única
+dependencia no probada del routing de Vercel.
+
+**2026-09-30 · Los espejos de filesystem se bloquean con 404 (T13).**
+`/api/support-mine` y `/api/needs-support` coinciden con un fichero de
+`api/`, así que Vercel los sirve sin rewrites; ahora los núcleos exigen su
+ruta canónica (flag `rewritten` de `server/vercel.ts`) y responden
+`404 Ruta no encontrada: …`, idéntico a Express (KO-1/KO-2 de T12).
+*Descartado:* borrar los ficheros de `api/` (rompe «una función por fichero»
+y obliga a reescribir `vercel.json`) y aceptar el 401 del espejo (paridad
+rota).
+*Por qué:* el cliente solo usa las rutas canónicas, así que el cambio es
+invisible para la app y solo afecta a quien adivine el nombre del fichero.
+
+**2026-09-30 · El rate limit de Vercel es por función y así se documenta (T13).**
+El `writeLimiter` (60/min por IP) es una cuenta única en Express y **cuatro**
+cuentas en Vercel (240/min efectivos); el `chatLimiter` (15/min) es igual en
+ambos. Se anota en la tabla del README en vez de tocar `server/limiters.ts`.
+*Descartado:* endurecer el `max` para compensar (haría 429 a IPs que en
+Express no lo recibirían) y moverlo a Redis/KV de un golpe (coste y plan
+Hobby gratis).
+*Por qué:* el multiplicador es **más permisivo, nunca restrictivo**, así que
+nadie que funcionaba en Express deja de funcionar; el hardening exterior es
+una decisión de producto cuando haya presupuesto.

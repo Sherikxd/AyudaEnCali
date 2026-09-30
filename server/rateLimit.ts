@@ -1,4 +1,6 @@
 import type { NextFunction, Request, Response } from 'express';
+import type { JsonResponder } from './http';
+import { clientIp } from './http';
 
 export interface RateLimitOptions {
   /** Ventana de tiempo en milisegundos. */
@@ -13,14 +15,30 @@ interface Bucket {
   resetAt: number;
 }
 
+export interface RateLimiter {
+  /**
+   * Aplica el límite a la `key` indicada. Escribe siempre las cabeceras
+   * `RateLimit-*`; si la ventana se desborda responde `429` en `res` y
+   * devuelve `true` (el llamante no debe continuar).
+   */
+  enforce(key: string, res: JsonResponder): boolean;
+  /** Adaptador Express del mismo límite: resuelve la IP del `req` y, si no
+   *  se limita, continúa con `next()`. */
+  middleware(req: Request, res: Response, next: NextFunction): void;
+}
+
 /**
  * Limitador de tasa en memoria.
  *
  * Es deliberadamente simple y sin dependencias: protege la API y al modelo de
  * lenguaje de abusos puntuales. Para despliegues con varias réplicas conviene
  * sustituirlo por un almacén compartido (Redis) manteniendo esta misma firma.
+ *
+ * El núcleo de `enforce` es framework-agnóstico (funciona sobre cualquier
+ * respuesta con `setHeader`/`status`/`json`: Express y Vercel); `middleware`
+ * es solo el envoltorio para rutas Express.
  */
-export function createRateLimiter(options: RateLimitOptions) {
+export function createRateLimiter(options: RateLimitOptions): RateLimiter {
   const { windowMs, max, message = 'Demasiadas solicitudes. Intenta de nuevo en unos segundos.' } = options;
   const buckets = new Map<string, Bucket>();
 
@@ -32,9 +50,8 @@ export function createRateLimiter(options: RateLimitOptions) {
   }, windowMs);
   sweeper.unref?.();
 
-  return function rateLimit(req: Request, res: Response, next: NextFunction): void {
+  function enforce(key: string, res: JsonResponder): boolean {
     const now = Date.now();
-    const key = req.ip ?? req.socket.remoteAddress ?? 'unknown';
 
     let bucket = buckets.get(key);
     if (!bucket || bucket.resetAt <= now) {
@@ -52,9 +69,16 @@ export function createRateLimiter(options: RateLimitOptions) {
     if (bucket.count > max) {
       res.setHeader('Retry-After', String(retryAfter));
       res.status(429).json({ error: message });
-      return;
+      return true;
     }
 
-    next();
+    return false;
+  }
+
+  return {
+    enforce,
+    middleware(req, res, next) {
+      if (!enforce(clientIp(req), res)) next();
+    },
   };
 }

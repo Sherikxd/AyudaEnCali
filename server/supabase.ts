@@ -11,6 +11,7 @@
  */
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import { errorMessage, logger } from './logger';
+import type { JsonResponder } from './http';
 import { applySupabaseSchema, projectRefFromHost, type ApplyResult } from './schemaAdmin';
 import {
   normalizeCategory,
@@ -554,4 +555,38 @@ export function toCommentRow(comment: PointComment): PointCommentRow {
     body: comment.comment,
     created_at: comment.createdAt,
   };
+}
+
+/* -------------------------------------------------------------------------- */
+/* Escrituras fallidas                                                         */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Responde ante un fallo de escritura en Supabase: **nunca** un éxito con la
+ * operación fallida.
+ *
+ * - Colisión de identificador (`23505` / «duplicate key») → `409`, para que
+ *   el cliente sepa que debe cambiar el identificador y no reintentar a ciegas.
+ * - Cualquier otro fallo (BD caída, red, permisos, tabla ausente) → `503`,
+ *   con mensaje reintentable.
+ *
+ * El detalle del error queda siempre en el log (nunca en la respuesta).
+ */
+export function respondWriteFailure(res: JsonResponder, label: string, error: SupabaseLikeError): void {
+  const detail = `${error.code ? `${error.code}: ` : ''}${error.message}`;
+  const duplicated =
+    error.code === '23505' || /duplicate key|already exists|primary key/i.test(error.message);
+
+  if (duplicated) {
+    logger.warn(`Escritura rechazada (${label}): identificador duplicado — ${detail}`);
+    res.status(409).json({
+      error: `Ya existe ${label} con ese identificador. Recarga la página y vuelve a intentarlo.`,
+    });
+    return;
+  }
+
+  logger.error(`Escritura fallida (${label}): ${detail}`);
+  res.status(503).json({
+    error: 'La base de datos no está disponible. Inténtalo de nuevo en unos segundos.',
+  });
 }

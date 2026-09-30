@@ -1,0 +1,88 @@
+# -----------------------------------------------------------------------
+# Pipeline de verificación (R5 del checklist de T11).
+#
+# El deploy de Vercel solo ejecuta `vite build`: si `tsc --noEmit` está
+# roto o un test falla, la producción se sube igual. Este workflow es el
+# gate previo: nada llega a Production sin pasar por aquí.
+#
+# Pasos (mismos comandos que AGENTS.md declara obligatorios):
+#   1. npm run lint        → tsc --noEmit (estricto)
+#   2. npx vite build      → build de producción
+#   3. npm run test:ui     → tests en jsdom
+#   4. npm run smoke:vercel→ humo de las funciones api/*.ts (hermético)
+#   5. npm run verify:rls  → SOLO si cambió supabase/schema.sql (necesita
+#                            red y PostgreSQL; no bloquea el resto)
+#
+# Nota: no hay package-lock.json (el repo usa bun.lock, congelado y de
+# propiedad de la persona), por eso es `npm ci || npm install`.
+# -----------------------------------------------------------------------
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verificar:
+    name: lint · build · test · smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # fetch-depth 0 → histórico completo para detectar cambios en
+          # supabase/schema.sql del job de RLS.
+          fetch-depth: 0
+
+      - name: Node.js
+        uses: actions/setup-node@v4
+        with:
+          # >=22.9 para `node --env-file-if-exists` (usa npm run test:ui).
+          node-version: "22"
+
+      - name: Instalar dependencias
+        run: npm ci || npm install
+
+      - name: Tipos estrictos (tsc --noEmit)
+        run: npm run lint
+
+      - name: Build de producción (vite build)
+        run: npx vite build
+
+      - name: Tests (jsdom)
+        run: npm run test:ui
+
+      - name: Humo de las funciones de Vercel
+        run: npm run smoke:vercel
+
+      # --- RLS: solo si cambió el esquema, y sin bloquear el pipeline ---
+      - name: Detectar cambios en supabase/schema.sql
+        id: rls
+        run: |
+          if git diff --name-only "${{ github.event.before }}" HEAD -- supabase/schema.sql 2>/dev/null | grep -q . \
+             || [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "cambio=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "cambio=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: PostgreSQL para verify:rls
+        if: steps.rls.outputs.cambio == 'true'
+        run: |
+          command -v initdb >/dev/null || (sudo apt-get update && sudo apt-get install -y postgresql)
+
+      - name: Validar RLS (schema.sql)
+        if: steps.rls.outputs.cambio == 'true'
+        # continue-on-error: requiere red y binarios de PostgreSQL; no debe
+        # tumbar el resto del gate si el runner no los tiene.
+        continue-on-error: true
+        run: npm run verify:rls

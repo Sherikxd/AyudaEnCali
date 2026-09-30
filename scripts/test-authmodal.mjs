@@ -305,8 +305,11 @@ try {
   );
 
   const serverSource = readFileSync(`${root}/server.ts`, 'utf8');
+  // La compresión vive en server/app.ts (compartida con la función de Vercel):
+  // debe ir ANTES de las rutas y solo fuera de Vercel (el borde ya comprime).
+  const serverAppSource = readFileSync(`${root}/server/app.ts`, 'utf8');
   check('server.ts responde la 404 personalizada con estado 404', /status\(404\)/.test(serverSource) && /404\.html/.test(serverSource));
-  check('server.ts comprime con gzip', /app\.use\(compression\(\)\)/.test(serverSource));
+  check('server/app.ts comprime con gzip fuera de Vercel', /app\.use\(compression\(\)\)/.test(serverAppSource) && /process\.env\.VERCEL/.test(serverAppSource));
   check('server.ts cachea /assets como inmutable', /immutable: true/.test(serverSource));
 
   /* ------------------------ 14. CDN de imágenes (Cloudinary) -------------- */

@@ -285,3 +285,20 @@ se cierran con `SMOKE_BASE_URL=https://<app>.vercel.app npm run smoke:vercel`.
 Detalle en `memoria/08-remediacion-p1.md`.
 
 T14 · Re-verificación T13 — agente-verificacion — ✅
+
+## Hotfix · `vercel.json` rechazado por el build de Vercel — ✅ (2026-09-30)
+
+El primer deploy falló con *"Invalid route source pattern"* + *"Invalid route
+destination segment"* (la validación de schema pasaba, pero no la de rutas).
+Reproducido en local con el validador oficial (`@vercel/routing-utils`,
+instalado **fuera** del repo) y corregido en `vercel.json`:
+
+- Header de imágenes: alternancia RegExp `(png|jpg|…)` → grupo no capturante
+  `(?:png|jpg|…)`.
+- Rewrite catch-all: `?_orig=:path*` → `?_orig=:path` (el modificador `*` solo
+  vale en el `source`; la ruta regex transformada sale **idéntica**).
+
+**Resultado:** `getTransformedRoutes` → `error: NINGUNO` · `lint` ✅ ·
+`vite build` ✅ · `test:ui` 40/40 ✅ · `smoke:vercel` 35/35 ✅. Detalle en
+`memoria/15-correccion-vercel-json.md`. **Pendiente:** commit+push de la
+persona y primer deploy verde.

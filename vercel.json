@@ -11,7 +11,7 @@
       "source": "/api/needs/:id/support",
       "destination": "/api/needs-support?_orig=needs/:id/support&id=:id"
     },
-    { "source": "/api/:path*", "destination": "/api/index?_orig=:path*" }
+    { "source": "/api/:path*", "destination": "/api/index?_orig=:path" }
   ],
   "headers": [
     {
@@ -21,7 +21,7 @@
       ]
     },
     {
-      "source": "/(.*\\.(png|jpg|jpeg|webp|avif|svg|ico|woff2|woff))",
+      "source": "/(.*\\.(?:png|jpg|jpeg|webp|avif|svg|ico|woff2|woff))",
       "headers": [
         { "key": "Cache-Control", "value": "public, max-age=604800" }
       ]

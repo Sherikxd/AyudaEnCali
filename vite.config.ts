@@ -22,6 +22,18 @@ export default defineConfig(() => {
       watch: process.env.DISABLE_HMR === 'true' ? null : {},
     },
     build: {
+      // Vendors en chunks propios: el código de la app cambia a cada deploy y
+      // no debe invalidar la caché de React/Clerk, que casi nunca cambian.
+      // (Rolldown, el bundler de Vite 8, exige la forma de función.)
+      rollupOptions: {
+        output: {
+          manualChunks: (moduleId: string) => {
+            if (/node_modules\/(react|react-dom|scheduler)\//.test(moduleId)) return 'vendor-react';
+            if (moduleId.includes('node_modules/@clerk/')) return 'vendor-clerk';
+            return undefined;
+          },
+        },
+      },
       // Leaflet, Clerk y React pesan juntos; el límite se mantiene explícito
       // para que las regresiones de tamaño salten en el build.
       chunkSizeWarningLimit: 700,

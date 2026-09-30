@@ -30,6 +30,25 @@ puntos de salud, y para publicar lo que el barrio necesita.
   registro también deja **entrar con una cuenta existente** en vez de crear
   una nueva.
 - **Directorio de emergencias** de Cali (123, 132, 119, 144, 125…).
+- **Preguntas frecuentes** (`FaqModal`): acordeón accesible con respuestas
+  sobre cuentas, reportes, apoyos, el asistente, los datos y la privacidad.
+  Se abre desde el botón «?» del encabezado, desde el perfil y desde el aviso
+  de cookies (que entra directo en la sección «Cookies y privacidad»).
+- **CTA claro en el mapa**: «Publicar ayuda» / «Ver tablón» con la misma
+  guarda de cuenta que el resto de la app.
+- **404 personalizada** (`public/404.html`, autocontenida y con `noindex`)
+  servida con estado **404 real** en desarrollo y producción: una URL
+  inexistente ya no devuelve el shell de la SPA con código 200.
+- **SEO y compartir**: título y descripción por pestaña
+  (`src/utils/seo.ts`), Open Graph y Twitter Card completos con imagen
+  1200×630, favicon SVG e icono para pantalla de inicio.
+- **Consentimiento de cookies**: banner con elección persistente
+  (`all` / `essential`) reversible desde el FAQ; las tipografías de terceros
+  solo se cargan si se aceptan.
+- **Imágenes servidas por CDN (Cloudinary)**: héroe, tarjetas del tablón y
+  vista previa social salen de `res.cloudinary.com` con `f_auto,q_auto,w_*`;
+  las URLs viven en `src/config/images.ts` y la subida es `npm run cdn:upload`
+  (los secretos de la cuenta solo en `.env`).
 
 ## Stack
 
@@ -125,6 +144,7 @@ que empiezan con `VITE_`.
 | `VITE_CLERK_PUBLISHABLE_KEY` | Para auth | Clave **pública** de Clerk. El servidor la lee en runtime y la sirve en `/api/config` (sin recompilar); si además va como `--build-arg`, queda horneada en el bundle |
 | `CLERK_PUBLISHABLE_KEY` | No | Alias sin prefijo `VITE_` de la misma clave (también aceptado por el servidor) |
 | `CLERK_SECRET_KEY` | Sí (auth) | Clave secreta, **solo servidor**. Verifica las sesiones que exigen cuenta (apoyos). Si falta, el resto de la app funciona pero `/api/support/*` y `POST /api/needs/:id/support` responden `401` |
+| `CLOUDINARY_URL` | Para CDN | URL de cuenta (`cloudinary://clave:secreto@nube`) que usa **solo** `npm run cdn:upload`. El cliente nunca la ve: conoce el *cloud name* público de `src/config/images.ts` |
 
 > **Aviso sobre `VITE_*`**: esas variables se leen **al compilar** (`vite
 > build`) y quedan escritas en el JavaScript estático; definirlas después en
@@ -146,6 +166,7 @@ que empiezan con `VITE_`.
 | `npm run verify:rls` | Valida `supabase/schema.sql` y sus políticas RLS en un Postgres desechable |
 | `npm run db:setup` | Crea/actualiza las tablas de Supabase con la Management API |
 | `npm run db:seed` | Carga los datos iniciales (5 puntos, 3 necesidades); idempotente |
+| `npm run cdn:upload` | Sube `public/images/` a Cloudinary y reescribe las `image_url` de Supabase. Acepta `--dry-run` y `--skip-db` |
 | `npm run clean` | Elimina `dist/` |
 
 ## API
@@ -306,6 +327,35 @@ veces y comprueba quién puede leer, insertar y borrar.
   actualizaciones de estado tras desmontar.
 - `ClerkSync` mantiene perfil local y ubicación alineados con la sesión de
   Clerk: valida la metadata antes de usarla y solo escribe cuando algo cambió.
+
+**Rendimiento**
+
+- Gzip (`compression`) para JS/CSS/HTML/JSON en todo el tráfico: el bundle
+  principal baja de ~408 kB a ~108 kB en la red.
+- Caché por tipo de archivo: `/assets/*` **inmutable por 1 año** (los nombres
+  llevan hash), imágenes una semana y el HTML nunca cacheado.
+- Leaflet y sus estilos viajan con el chunk del mapa (antes un `<link>` a un
+  CDN bloqueaba el render de *todas* las pestañas); las tipografías de terceros
+  se inyectan desde JS, fuera del `<head>` crítico.
+- `manualChunks` para React y Clerk: desplegar no invalida la caché de los
+  vendors, y las vistas siguen cargándose con `React.lazy` por pestaña.
+- Imágenes comprimidas con `ffmpeg` (≈2,9 MB → ≈0,6 MB en `public/`) y tarjetas
+  del tablón con `width`/`height`, `loading="lazy"` y `decoding="async"` para
+  evitar saltos de layout.
+- **CDN de imágenes (Cloudinary)**: el héroe (w_1600), las tarjetas (w_900) y
+  la vista previa social (JPEG 1200×630) se entregan con `f_auto,q_auto`, así
+  un navegador moderno recibe WebP/AVIF (p. ej. 81 kB → 59 kB en la tarjeta)
+  desde un borde de red cercano en vez de desde el contenedor de la app.
+
+**SEO, compartir y privacidad**
+
+- `<title>` y `description` por pestaña actualizados en cada cambio de vista,
+  junto con `og:title`/`og:description` y sus equivalentes de Twitter.
+- `og:image` (1200×630), favicon SVG, icono de inicio y `theme-color`.
+- La 404 se marca `noindex` y enlaza al mapa y al FAQ
+  (`/#preguntas-frecuentes`, que abre el modal al cargar).
+- Cookies: solo hay recursos de terceros si la persona los acepta; la elección
+  vive en `localStorage` y se puede cambiar desde el perfil o el FAQ.
 
 ## Despliegue
 

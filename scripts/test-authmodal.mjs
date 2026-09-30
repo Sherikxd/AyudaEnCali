@@ -262,6 +262,64 @@ try {
   const closeBody = ctxSource.match(/const closeAuthModal = \(\) => \{([\s\S]*?)\};/)?.[1] ?? '';
   check('closeAuthModal limpia el callback pendiente', closeBody.includes('setAuthCallback(null)'), closeBody.trim());
   check('closeAuthModal cierra el modal', closeBody.includes('setIsAuthModalOpen(false)'), closeBody.trim());
+
+  /* ------------- 13. Cableado de FAQ, cookies, SEO, 404 y rendimiento ----- */
+  check(
+    'App.tsx importa y monta FaqModal',
+    /import \{ FaqModal \} from '\.\/components\/FaqModal'/.test(appSource) &&
+      /<FaqModal[\s\S]*?isOpen=\{isFaqOpen\}/.test(appSource) &&
+      /initialSection=\{faqSection\}/.test(appSource),
+  );
+  check(
+    'App.tsx monta el banner de cookies',
+    /import \{ CookieConsent \} from '\.\/components\/CookieConsent'/.test(appSource) &&
+      /<CookieConsent \/>/.test(appSource),
+  );
+  check(
+    'App.tsx actualiza título y metadatos al cambiar de pestaña',
+    /updatePageMeta\(PAGE_META\[activeTab\]\)/.test(appSource),
+  );
+  check(
+    'App.tsx abre el FAQ desde el enlace #preguntas-frecuentes',
+    /window\.location\.hash !== '#preguntas-frecuentes'/.test(appSource) && /openFaq\(\)/.test(appSource),
+  );
+
+  const mainSource = readFileSync(`${root}/src/main.tsx`, 'utf8');
+  check('main.tsx aplica el consentimiento de cookies al arrancar', /applyConsent\(readConsent\(\)\)/.test(mainSource));
+
+  const indexHtml = readFileSync(`${root}/index.html`, 'utf8');
+  check(
+    'index.html tiene og:image y twitter:image para la vista previa',
+    /property="og:image"/.test(indexHtml) && /name="twitter:image"/.test(indexHtml),
+  );
+  check(
+    'index.html sin hojas de terceros bloqueantes',
+    !/unpkg\.com\/leaflet/.test(indexHtml) && !/fonts\.googleapis\.com\/css2/.test(indexHtml),
+    'leaflet.css y Google Fonts',
+  );
+
+  const notFoundPage = readFileSync(`${root}/public/404.html`, 'utf8');
+  check(
+    'la 404 se marca noindex y enlaza al FAQ',
+    /noindex/.test(notFoundPage) && /#preguntas-frecuentes/.test(notFoundPage),
+  );
+
+  const serverSource = readFileSync(`${root}/server.ts`, 'utf8');
+  check('server.ts responde la 404 personalizada con estado 404', /status\(404\)/.test(serverSource) && /404\.html/.test(serverSource));
+  check('server.ts comprime con gzip', /app\.use\(compression\(\)\)/.test(serverSource));
+  check('server.ts cachea /assets como inmutable', /immutable: true/.test(serverSource));
+
+  /* ------------------------ 14. CDN de imágenes (Cloudinary) -------------- */
+  check(
+    'index.html sirve la vista previa social desde Cloudinary',
+    /og:image"[\s\S]{0,40}content="https:\/\/res\.cloudinary\.com\//.test(indexHtml),
+    'og:image',
+  );
+  const imagesCfg = readFileSync(`${root}/src/config/images.ts`, 'utf8');
+  check('el cliente solo conoce el cloud name (sin secretos)', /res\.cloudinary\.com/.test(imagesCfg) && !/CLOUDINARY_URL|api_key|apiSecret/.test(imagesCfg));
+  const blogSource = readFileSync(`${root}/src/components/BlogView.tsx`, 'utf8');
+  check('el héroe del tablón se sirve desde el CDN', /CDN_IMAGES\.blogHero/.test(blogSource));
+  check('ningún componente apunta a un JPG local', !/src="\/images\/[^"]+\.jpg"/.test(blogSource));
 } catch (error) {
   check('el test se ejecuta sin excepciones', false, error.stack ?? error.message);
 } finally {

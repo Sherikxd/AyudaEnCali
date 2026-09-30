@@ -2,6 +2,11 @@
  * Aplica `supabase/schema.sql` al proyecto configurado en `.env` usando la
  * Supabase Management API. Equivalente manual del auto-aplicado del servidor.
  *
+ * Crea (con `CREATE TABLE IF NOT EXISTS` / `CREATE OR REPLACE FUNCTION`, todo
+ * idempotente) las tablas `help_points`, `help_needs`, `need_supporters` y
+ * `point_comments`, sus índices, las políticas RLS y la función
+ * `toggle_need_support` del recuento de apoyos. No borra ni modifica datos.
+ *
  * Uso:
  *   npm run db:setup
  *

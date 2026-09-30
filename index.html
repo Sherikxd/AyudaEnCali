@@ -3,22 +3,60 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>AyudaEnCali - Red de Ayuda y Emergencias Ciudad de Cali</title>
-    <meta name="description" content="Plataforma comunitaria para reportar y consultar en tiempo real centros de acopio, veterinarias, albergues y emergencias en Cali con mapa interactivo y asistente de IA." />
-    <meta property="og:title" content="AyudaEnCali - Red de Ayuda y Emergencias Ciudad de Cali" />
-    <meta property="og:description" content="Plataforma comunitaria para reportar y consultar en tiempo real centros de acopio, veterinarias, albergues y emergencias en Cali con mapa interactivo y asistente de IA." />
+    <title>AyudaEnCali — Red de ayuda y emergencias de Cali</title>
+    <meta
+      name="description"
+      content="Plataforma comunitaria para reportar y consultar en tiempo real centros de acopio, veterinarias, albergues y emergencias en Cali con mapa interactivo y asistente de IA."
+    />
+    <meta name="theme-color" content="#EA580C" />
+    <meta name="robots" content="index,follow" />
+    <link rel="canonical" href="https://ayudaencali.lat" />
+
+    <!-- Iconos -->
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="/images/apple-touch-icon.png" />
+
+    <!-- Vista previa al compartir (Open Graph / Twitter) -->
+    <meta property="og:site_name" content="AyudaEnCali" />
+    <meta property="og:locale" content="es_CO" />
     <meta property="og:type" content="website" />
     <meta property="og:url" content="https://ayudaencali.lat" />
-    <link rel="canonical" href="https://ayudaencali.lat" />
+    <meta property="og:title" content="AyudaEnCali — Red de ayuda y emergencias de Cali" />
+    <meta
+      property="og:description"
+      content="Reporta y consulta en tiempo real centros de acopio, albergues, veterinarias y emergencias en Cali: mapa interactivo, tablón comunitario y asistente de IA."
+    />
+    <!-- La vista previa social se sirve del CDN de Cloudinary en JPEG
+         (los rastreadores no interpretan AVIF/WebP) con recorte 1200×630. -->
+    <meta
+      property="og:image"
+      content="https://res.cloudinary.com/z2t43npi/image/upload/c_fill,w_1200,h_630,f_jpg,q_auto/ayudaencali/og_ayudaencali"
+    />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta property="og:image:alt" content="Panorama de Cali con la marca de AyudaEnCali" />
     <meta name="twitter:card" content="summary_large_image" />
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
+    <meta name="twitter:title" content="AyudaEnCali — Red de ayuda y emergencias de Cali" />
+    <meta
+      name="twitter:description"
+      content="Reporta y consulta en tiempo real centros de acopio, albergues, veterinarias y emergencias en Cali: mapa interactivo, tablón comunitario y asistente de IA."
+    />
+    <meta
+      name="twitter:image"
+      content="https://res.cloudinary.com/z2t43npi/image/upload/c_fill,w_1200,h_630,f_jpg,q_auto/ayudaencali/og_ayudaencali"
+    />
+    <meta name="twitter:image:alt" content="Panorama de Cali con la marca de AyudaEnCali" />
+
+    <!--
+      Tipografías de terceros: sin <link> bloqueante en el head. Se inyectan
+      desde `src/utils/thirdPartyFonts.ts` de forma asíncrona y solo si la
+      persona aceptó las cookies opcionales (banner de consentimiento).
+    -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   </head>
   <body class="bg-white text-slate-900 font-sans antialiased selection:bg-orange-500 selection:text-white">
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
-

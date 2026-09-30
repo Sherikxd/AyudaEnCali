@@ -1,10 +1,11 @@
 import type { HelpNeed, HelpPoint, PointComment } from '../src/types';
+import { CDN_IMAGES } from '../src/config/images';
 
 /**
  * Datos semilla (fallback) usados cuando Supabase no está configurado o no
  * devuelve filas: mantienen la app utilizable en modo 100% local.
- * Las rutas de imagen apuntan a `public/images` para que funcionen también
- * en el build de producción.
+ * Las imágenes se sirven desde el CDN de Cloudinary (`src/config/images.ts`),
+ * así que las necesidades publicadas ven sus fotos igual en local y producción.
  */
 export const INITIAL_HELP_POINTS: HelpPoint[] = [
   {
@@ -139,7 +140,7 @@ export const INITIAL_HELP_NEEDS: HelpNeed[] = [
     status: 'activa',
     supportersCount: 18,
     createdAt: '2026-09-26T06:30:00Z',
-    imageUrl: '/images/volunteer_aid_boxes_1790469956879.jpg',
+    imageUrl: CDN_IMAGES.volunteerBoxes,
   },
   {
     id: 'need-2',
@@ -155,7 +156,7 @@ export const INITIAL_HELP_NEEDS: HelpNeed[] = [
     status: 'activa',
     supportersCount: 34,
     createdAt: '2026-09-26T08:15:00Z',
-    imageUrl: '/images/vet_animal_care_1790469966961.jpg',
+    imageUrl: CDN_IMAGES.vetAnimalCare,
   },
   {
     id: 'need-3',
@@ -171,7 +172,7 @@ export const INITIAL_HELP_NEEDS: HelpNeed[] = [
     status: 'en_proceso',
     supportersCount: 22,
     createdAt: '2026-09-25T14:00:00Z',
-    imageUrl: '/images/volunteer_aid_boxes_1790469956879.jpg',
+    imageUrl: CDN_IMAGES.volunteerBoxes,
   },
 ];
 

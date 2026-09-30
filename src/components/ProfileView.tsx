@@ -13,7 +13,9 @@ import {
   ArrowRight,
   Plus,
   Navigation,
-  Compass
+  Compass,
+  HelpCircle,
+  Cookie
 } from 'lucide-react';
 
 export const ProfileView: React.FC = () => {
@@ -30,7 +32,16 @@ export const ProfileView: React.FC = () => {
     userLocation,
     setIsLocationModalOpen,
     serverStatus,
+    openFaq,
+    cookieConsent,
   } = useApp();
+
+  const consentLabel =
+    cookieConsent === 'all'
+      ? 'Opcionales aceptadas'
+      : cookieConsent === 'essential'
+        ? 'Solo esenciales'
+        : 'Sin responder todavía';
 
   const [formData, setFormData] = useState({
     name: userProfile.name,
@@ -529,6 +540,41 @@ export const ProfileView: React.FC = () => {
             </p>
           </div>
         </div>
+      </div>
+
+      {/* Ayuda y privacidad: atajos al FAQ y a la configuración de cookies */}
+      <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 mt-6 mb-4 bg-white rounded-3xl border border-slate-100 shadow-sm overflow-hidden divide-y divide-slate-100">
+        <button
+          type="button"
+          onClick={() => openFaq()}
+          className="w-full flex items-center gap-3 p-4 text-left hover:bg-slate-50 transition-colors"
+        >
+          <div className="w-9 h-9 rounded-xl bg-orange-50 text-orange-600 flex items-center justify-center shrink-0">
+            <HelpCircle className="w-4 h-4" />
+          </div>
+          <div className="flex-1">
+            <p className="text-xs font-bold text-slate-900">Preguntas frecuentes</p>
+            <p className="text-[11px] text-slate-500">
+              Cuentas, reportes, apoyos, asistente y privacidad
+            </p>
+          </div>
+          <ArrowRight className="w-4 h-4 text-slate-300 shrink-0" />
+        </button>
+
+        <button
+          type="button"
+          onClick={() => openFaq('cookies')}
+          className="w-full flex items-center gap-3 p-4 text-left hover:bg-slate-50 transition-colors"
+        >
+          <div className="w-9 h-9 rounded-xl bg-slate-100 text-slate-600 flex items-center justify-center shrink-0">
+            <Cookie className="w-4 h-4" />
+          </div>
+          <div className="flex-1">
+            <p className="text-xs font-bold text-slate-900">Cookies y privacidad</p>
+            <p className="text-[11px] text-slate-500">{consentLabel}</p>
+          </div>
+          <ArrowRight className="w-4 h-4 text-slate-300 shrink-0" />
+        </button>
       </div>
     </div>
   );

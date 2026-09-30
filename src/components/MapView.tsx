@@ -1,5 +1,8 @@
 import React, { useEffect, useRef, useState, useMemo } from 'react';
 import L from 'leaflet';
+// El CSS de Leaflet viaja con este chunk: antes venía de un CDN en el <head>
+// y bloqueaba el render de TODAS las pestañas, incluso sin mapa.
+import 'leaflet/dist/leaflet.css';
 import { useApp } from '../context/AppContext';
 import { HelpCategory } from '../types';
 import { MapDashboardSummary } from './MapDashboardSummary';
@@ -160,6 +163,7 @@ export const MapView: React.FC = () => {
     pointComments,
     addPointComment,
     openAuthModal,
+    setActiveTab,
   } = useApp();
 
   const mapContainerRef = useRef<HTMLDivElement>(null);
@@ -384,6 +388,25 @@ export const MapView: React.FC = () => {
     salud: 'Emergencias Médicas',
   };
 
+  /**
+   * CTA principal del mapa: reportar un punto de ayuda. Misma guarda que en el
+   * resto de la app (cuenta comunitaria antes de abrir el formulario).
+   */
+  const handleOpenReport = () => {
+    if (!userProfile.isRegistered) {
+      openAuthModal(
+        'Para reportar un centro de ayuda en Cali debes crear una cuenta comunitaria.',
+        () => {
+          setReportModalType('point');
+          setIsReportModalOpen(true);
+        },
+      );
+      return;
+    }
+    setReportModalType('point');
+    setIsReportModalOpen(true);
+  };
+
   return (
     <div className="relative w-full h-[calc(100vh-61px-56px)] md:h-[calc(100vh-61px)] flex flex-col md:flex-row overflow-hidden bg-slate-50">
       {/* Top Filter, Search Bar & Live Dashboard Summary Over Map */}
@@ -506,6 +529,34 @@ export const MapView: React.FC = () => {
             <span>Cambiar</span>
             <ChevronRight className="w-3 h-3" />
           </button>
+        </div>
+
+        {/* Clear CTA: qué puede hacer aquí alguien que llega por primera vez */}
+        <div className="bg-white/95 backdrop-blur-md rounded-2xl shadow-lg shadow-slate-900/5 border border-slate-100 p-3 flex flex-col sm:flex-row sm:items-center gap-2.5">
+          <div className="flex-1 min-w-0">
+            <p className="text-xs font-extrabold text-slate-900 leading-tight">
+              ¿Necesitas ayuda o quieres ayudar?
+            </p>
+            <p className="text-[11px] text-slate-500 leading-snug mt-0.5">
+              Publica una necesidad o registra un centro de apoyo en Cali.
+            </p>
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              type="button"
+              onClick={handleOpenReport}
+              className="px-3.5 py-2 rounded-xl bg-orange-600 hover:bg-orange-700 text-white text-xs font-bold shadow-md shadow-orange-600/25 transition-all active:scale-95"
+            >
+              Publicar ayuda
+            </button>
+            <button
+              type="button"
+              onClick={() => setActiveTab('blog')}
+              className="px-3 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold transition-colors"
+            >
+              Ver tablón
+            </button>
+          </div>
         </div>
 
         {/* Real-time Dashboard Summary Component */}

@@ -1,7 +1,8 @@
 import React, { useState, useMemo } from 'react';
-import { useClerk, useUser } from '@clerk/clerk-react';
+import { useUser } from '@clerk/clerk-react';
 import { useApp } from '../context/AppContext';
 import { HelpCategory, HelpNeed } from '../types';
+import { CDN_IMAGES } from '../config/images';
 import { 
   Plus, 
   Search, 
@@ -26,9 +27,9 @@ export const BlogView: React.FC = () => {
     openAuthModal
   } = useApp();
 
-  // El apoyo exige cuenta: sin sesión de Clerk se abre el inicio de sesión.
+  // El apoyo exige cuenta: se usa solo para el texto de ayuda («inicia
+  // sesión»). La puerta de identidad la pone `supportNeed` en el contexto.
   const { isSignedIn } = useUser();
-  const { openSignIn } = useClerk();
 
   const [activeFilter, setActiveFilter] = useState<'all' | 'alta' | HelpCategory | 'resuelta'>('all');
   const [searchQuery, setSearchQuery] = useState('');
@@ -62,18 +63,16 @@ export const BlogView: React.FC = () => {
     }
   };
 
-  /** ¿La cuenta actual ya apoyó esta necesidad? (corazón relleno) */
+  // ¿La cuenta actual ya apoyó esta necesidad? (corazón relleno)
   const isNeedSupported = (need: HelpNeed) => supportedNeedIds.includes(need.id);
 
   /**
    * Like conmutador: una sola acción por clic (`add` da el apoyo, `remove`
-   * lo retira). Sin cuenta de Clerk se abre el inicio de sesión de la app.
+   * lo retira). Exige sesión de Clerk (T8): sin ella, `supportNeed` guarda
+   * la acción para reanudarla en cuanto se entre y abre el flujo de ingreso
+   * correspondiente.
    */
   const handleSupport = (need: HelpNeed) => {
-    if (!isSignedIn) {
-      openSignIn();
-      return;
-    }
     void supportNeed(need.id, isNeedSupported(need) ? 'remove' : 'add');
   };
 
@@ -95,8 +94,11 @@ export const BlogView: React.FC = () => {
       <section className="relative bg-slate-900 text-white overflow-hidden py-10 md:py-14 px-4 sm:px-6 lg:px-8">
         <div className="absolute inset-0 opacity-25">
           <img
-            src="/images/cali_relief_banner_1790469947561.jpg"
+            src={CDN_IMAGES.blogHero}
             alt="Panorama de Cali Solidaria"
+            width={1376}
+            height={768}
+            decoding="async"
             className="w-full h-full object-cover"
             referrerPolicy="no-referrer"
           />
@@ -244,6 +246,10 @@ export const BlogView: React.FC = () => {
                       <img
                         src={need.imageUrl}
                         alt={need.title}
+                        width={900}
+                        height={672}
+                        loading="lazy"
+                        decoding="async"
                         className="w-full h-full object-cover"
                         referrerPolicy="no-referrer"
                       />

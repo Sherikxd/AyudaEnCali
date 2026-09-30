@@ -1,7 +1,9 @@
 import express, { Request, Response } from 'express';
+import compression from 'compression';
 import { createServer as createViteServer } from 'vite';
 import { GoogleGenAI } from '@google/genai';
 import dotenv from 'dotenv';
+import { randomUUID } from 'node:crypto';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
@@ -12,17 +14,20 @@ import { getAuthenticatedUser, respondUnauthorized } from './server/auth';
 import { INITIAL_COMMENTS, INITIAL_HELP_NEEDS, INITIAL_HELP_POINTS } from './server/seedData';
 import { SUPABASE_SQL } from './server/schema';
 import {
+  classifySupabaseError,
   getSupabaseClient,
   getSupabaseStatus,
   initSupabase,
+  mapCommentRow,
   mapNeedRow,
   mapPointRow,
   maybeVerifySchema,
+  toCommentRow,
   toNeedRow,
   toPointRow,
   withSupabaseRetry,
 } from './server/supabase';
-import type { HelpNeedRow, HelpPointRow } from './server/supabase';
+import type { HelpNeedRow, HelpPointRow, PointCommentRow, SupabaseLikeError } from './server/supabase';
 import {
   LIMITS,
   sanitizeParam,
@@ -141,6 +146,36 @@ function pushInCache<T>(list: T[], item: T): T[] {
   return [item, ...list].slice(0, MAX_CACHED_ITEMS);
 }
 
+/**
+ * Responde ante un fallo de escritura en Supabase: **nunca** un éxito con la
+ * operación fallida.
+ *
+ * - Colisión de identificador (`23505` / «duplicate key») → `409`, para que
+ *   el cliente sepa que debe cambiar el identificador y no reintentar a ciegas.
+ * - Cualquier otro fallo (BD caída, red, permisos, tabla ausente) → `503`,
+ *   con mensaje reintentable.
+ *
+ * El detalle del error queda siempre en el log (nunca en la respuesta).
+ */
+function respondWriteFailure(res: Response, label: string, error: SupabaseLikeError): void {
+  const detail = `${error.code ? `${error.code}: ` : ''}${error.message}`;
+  const duplicated =
+    error.code === '23505' || /duplicate key|already exists|primary key/i.test(error.message);
+
+  if (duplicated) {
+    logger.warn(`Escritura rechazada (${label}): identificador duplicado — ${detail}`);
+    res.status(409).json({
+      error: `Ya existe ${label} con ese identificador. Recarga la página y vuelve a intentarlo.`,
+    });
+    return;
+  }
+
+  logger.error(`Escritura fallida (${label}): ${detail}`);
+  res.status(503).json({
+    error: 'La base de datos no está disponible. Inténtalo de nuevo en unos segundos.',
+  });
+}
+
 /* -------------------------------------------------------------------------- */
 /* App                                                                         */
 /* -------------------------------------------------------------------------- */
@@ -153,6 +188,9 @@ app.disable('x-powered-by');
 if (isProduction) app.set('trust proxy', 1);
 
 app.use(securityHeaders);
+// Gzip para texto (JS/CSS/HTML/JSON): el bundle principal baja de ~400 kB a
+// ~120 kB. Se coloca antes de rutas y estáticos para cubrir también la API.
+app.use(compression());
 app.use(express.json({ limit: '1mb' }));
 
 const writeLimiter = createRateLimiter({
@@ -229,6 +267,13 @@ app.post(
   '/api/points',
   writeLimiter,
   asyncHandler(async (req: Request, res: Response) => {
+    // Escritura autenticada: sin sesión de Clerk no se publica nada (T1).
+    const user = await getAuthenticatedUser(req);
+    if (!user) {
+      respondUnauthorized(res, 'Debes iniciar sesión para reportar un punto de ayuda.');
+      return;
+    }
+
     const parsed = validatePoint(req.body);
     if (!parsed.ok) {
       res.status(400).json({ error: 'Datos de punto inválidos.', details: parsed.errors });
@@ -238,22 +283,32 @@ app.post(
     const now = new Date().toISOString();
     const point: HelpPoint = {
       ...parsed.value,
-      id: parsed.value.id ?? `cali-point-${Date.now()}`,
-      verified: true,
+      // Identificador propio del servidor: `randomUUID()` no colisiona como
+      // `Date.now()`; el prefijo `cali-point-` sigue siendo compatible con
+      // los IDs semilla y con los que genera el cliente.
+      id: parsed.value.id ?? `cali-point-${randomUUID()}`,
+      // La identidad sale SOLO del JWT: el `authorId` del cuerpo se ignora.
+      authorId: user.userId,
+      // Un reporte nuevo nace sin verificar: verificar es un paso aparte.
+      verified: false,
       createdAt: now,
       updatedAt: now,
     };
 
-    memoryPoints = pushInCache(memoryPoints, point);
-
     await maybeVerifySchema();
     const client = getSupabaseClient();
     if (client) {
-      await withSupabaseRetry('Supabase insert help_points', () =>
+      const { error } = await withSupabaseRetry('Supabase insert help_points', () =>
         client.from('help_points').insert([toPointRow(point)]),
       );
+      if (error) {
+        // Nunca un 201 con el insert fallido (T4): 409 colisión / 503 BD caída.
+        respondWriteFailure(res, 'el punto', error);
+        return;
+      }
     }
 
+    memoryPoints = pushInCache(memoryPoints, point);
     res.status(201).json({ point });
   }),
 );
@@ -287,6 +342,13 @@ app.post(
   '/api/needs',
   writeLimiter,
   asyncHandler(async (req: Request, res: Response) => {
+    // Escritura autenticada: sin sesión de Clerk no se publica nada (T1).
+    const user = await getAuthenticatedUser(req);
+    if (!user) {
+      respondUnauthorized(res, 'Debes iniciar sesión para publicar una necesidad.');
+      return;
+    }
+
     const parsed = validateNeed(req.body);
     if (!parsed.ok) {
       res.status(400).json({ error: 'Datos de necesidad inválidos.', details: parsed.errors });
@@ -295,22 +357,28 @@ app.post(
 
     const need: HelpNeed = {
       ...parsed.value,
-      id: parsed.value.id ?? `cali-need-${Date.now()}`,
+      // `randomUUID()` evita las colisiones de `Date.now()` y el prefijo
+      // `cali-need-` mantiene la compatibilidad con los IDs semilla.
+      id: parsed.value.id ?? `cali-need-${randomUUID()}`,
       status: 'activa',
       supportersCount: 1,
       createdAt: new Date().toISOString(),
     };
 
-    memoryNeeds = pushInCache(memoryNeeds, need);
-
     await maybeVerifySchema();
     const client = getSupabaseClient();
     if (client) {
-      await withSupabaseRetry('Supabase insert help_needs', () =>
+      const { error } = await withSupabaseRetry('Supabase insert help_needs', () =>
         client.from('help_needs').insert([toNeedRow(need)]),
       );
+      if (error) {
+        // Nunca un 201 con el insert fallido (T4): 409 colisión / 503 BD caída.
+        respondWriteFailure(res, 'la necesidad', error);
+        return;
+      }
     }
 
+    memoryNeeds = pushInCache(memoryNeeds, need);
     res.status(201).json({ need });
   }),
 );
@@ -367,8 +435,10 @@ app.get(
  *    criptográficamente en el servidor: `401` sin sesión).
  *  - Un usuario = un apoyo por necesidad: repetir `add` es idempotente y
  *    `remove` retira el apoyo sin dejar el contador en negativo.
- *  - La fuente de verdad es `need_supporters` (PK compuesta `need_id,user_id`);
- *    `supporters_count` solo cambia cuando se inserta o borra una fila.
+ *  - La fuente de verdad es `need_supporters` (PK compuesta `need_id,user_id`)
+ *    y el recuento lo escribe la BD en la misma transacción que modifica la
+ *    tabla (RPC `toggle_need_support`). La caché **nunca** escribe
+ *    `supporters_count`: era una escritura absoluta que perdía apoyos.
  */
 app.post(
   '/api/needs/:id/support',
@@ -417,57 +487,90 @@ app.post(
     const client = getSupabaseClient();
 
     let handledInDb = false;
-    let delta = 0;
 
     if (client) {
-      if (wantAdd) {
-        // `ignoreDuplicates` sobre la PK (need_id, user_id): insertar dos
-        // veces no crea filas duplicadas ni vuelve a sumar el contador.
-        const { data, error } = await withSupabaseRetry<{ need_id: string }[]>(
-          'Supabase insert need_supporters',
-          () =>
-            client
-              .from('need_supporters')
-              .upsert(
-                { need_id: target.id, user_id: user.userId },
-                { onConflict: 'need_id,user_id', ignoreDuplicates: true },
-              )
-              .select('need_id'),
-        );
-        if (!error) {
-          handledInDb = true;
-          supporters.add(user.userId);
-          if (Array.isArray(data) && data.length > 0) delta = 1;
-        }
-      } else {
-        const { data, error } = await withSupabaseRetry<{ need_id: string }[]>(
-          'Supabase delete need_supporters',
-          () =>
-            client
-              .from('need_supporters')
-              .delete()
-              .eq('need_id', target.id)
-              .eq('user_id', user.userId)
-              .select('need_id'),
-        );
-        if (!error) {
-          handledInDb = true;
-          supporters.delete(user.userId);
-          if (Array.isArray(data) && data.length > 0) delta = -1;
-        }
-      }
+      // 1) Camino normal: la RPC hace el INSERT/DELETE en `need_supporters`
+      //    y recalcula `supporters_count` con `count(*)` en la misma
+      //    transacción, bloqueando la fila de la necesidad para que dos
+      //    apoyos simultáneos no se pisen. Devuelve el recuento real.
+      const { data: realCount, error: rpcError } = await withSupabaseRetry<number | null>(
+        'Supabase rpc toggle_need_support',
+        () =>
+          client.rpc('toggle_need_support', {
+            p_need_id: target.id,
+            p_user_id: user.userId,
+            p_action: wantAdd ? 'add' : 'remove',
+          }),
+      );
 
-      if (handledInDb && delta !== 0) {
-        target.supportersCount = Math.max(0, target.supportersCount + delta);
-        await withSupabaseRetry('Supabase update help_needs', () =>
-          client.from('help_needs').update({ supporters_count: target.supportersCount }).eq('id', id),
-        );
+      if (!rpcError && typeof realCount === 'number') {
+        handledInDb = true;
+        target.supportersCount = realCount;
+        if (wantAdd) supporters.add(user.userId);
+        else supporters.delete(user.userId);
+      } else if (rpcError && classifySupabaseError(rpcError) !== 'transient') {
+        // 2) Respaldo: la BD responde pero aún no tiene la función (esquema
+        //    anterior a `npm run db:setup`). Se escribe directo y el
+        //    contador se recalcula con el recuento real de la tabla, nunca
+        //    con el valor que traía la caché.
+        const write = await (wantAdd
+          ? withSupabaseRetry<{ need_id: string }[]>('Supabase insert need_supporters', () =>
+              client
+                .from('need_supporters')
+                .upsert(
+                  { need_id: target.id, user_id: user.userId },
+                  { onConflict: 'need_id,user_id', ignoreDuplicates: true },
+                )
+                .select('need_id'),
+            )
+          : withSupabaseRetry<{ need_id: string }[]>('Supabase delete need_supporters', () =>
+              client
+                .from('need_supporters')
+                .delete()
+                .eq('need_id', target.id)
+                .eq('user_id', user.userId)
+                .select('need_id'),
+            ));
+
+        if (!write.error) {
+          const { data: rows, error: countError } = await withSupabaseRetry<{ need_id: string }[]>(
+            'Supabase recount need_supporters',
+            () =>
+              client.from('need_supporters').select('need_id').eq('need_id', target.id).limit(10_000),
+          );
+
+          if (countError || !Array.isArray(rows)) {
+            // El apoyo ya está escrito pero no podemos confirmar el
+            // recuento: se responde error en lugar de un éxito inventado.
+            respondWriteFailure(
+              res,
+              'el apoyo',
+              countError ?? { message: 'El recuento de apoyos no está disponible.' },
+            );
+            return;
+          }
+
+          const recount = rows.length;
+          const { error: updateError } = await withSupabaseRetry('Supabase update supporters_count', () =>
+            client.from('help_needs').update({ supporters_count: recount }).eq('id', target.id),
+          );
+          if (updateError) {
+            respondWriteFailure(res, 'el contador de apoyos', updateError);
+            return;
+          }
+
+          handledInDb = true;
+          target.supportersCount = recount;
+          if (wantAdd) supporters.add(user.userId);
+          else supporters.delete(user.userId);
+        }
       }
     }
 
     if (!handledInDb) {
-      // Sin base de datos (o `need_supporters` aún sin crear): toggle local
-      // idempotente, el mismo comportamiento que con la tabla disponible.
+      // Sin base de datos (o red caída): toggle local idempotente, el mismo
+      // comportamiento que con la tabla disponible. Último recurso: aquí el
+      // contador es el de la caché porque no existe otra fuente.
       if (wantAdd && !supporters.has(user.userId)) {
         supporters.add(user.userId);
         target.supportersCount += 1;
@@ -488,16 +591,54 @@ app.post(
 
 /* -------------------------------- Comentarios ----------------------------- */
 
-app.get('/api/comments', (req: Request, res: Response) => {
-  const pointId = typeof req.query.pointId === 'string' ? sanitizeParam(req.query.pointId) : '';
-  const comments = pointId ? memoryComments.filter((c) => c.pointId === pointId) : memoryComments;
-  res.json({ comments });
-});
+/**
+ * Comentarios de un punto.
+ *
+ * Lee de `point_comments` (persistente) y, si Supabase no responde o la tabla
+ * aún no existe, cae a la caché en memoria: mismo patrón que los puntos.
+ */
+app.get(
+  '/api/comments',
+  asyncHandler(async (req: Request, res: Response) => {
+    const pointId = typeof req.query.pointId === 'string' ? sanitizeParam(req.query.pointId) : '';
+
+    await maybeVerifySchema();
+    const client = getSupabaseClient();
+
+    if (client) {
+      const { data, error } = await withSupabaseRetry<PointCommentRow[]>('Supabase point_comments', () =>
+        client
+          .from('point_comments')
+          .select('*')
+          .order('created_at', { ascending: false })
+          .limit(500),
+      );
+
+      if (!error && Array.isArray(data) && data.length > 0) {
+        const comments = data.map(mapCommentRow);
+        memoryComments = comments;
+        res.json({ comments: pointId ? comments.filter((c) => c.pointId === pointId) : comments });
+        return;
+      }
+    }
+
+    res.json({
+      comments: pointId ? memoryComments.filter((c) => c.pointId === pointId) : memoryComments,
+    });
+  }),
+);
 
 app.post(
   '/api/comments',
   writeLimiter,
   asyncHandler(async (req: Request, res: Response) => {
+    // Escritura autenticada: sin sesión de Clerk no se comenta (T1).
+    const user = await getAuthenticatedUser(req);
+    if (!user) {
+      respondUnauthorized(res, 'Debes iniciar sesión para comentar.');
+      return;
+    }
+
     const parsed = validateComment(req.body);
     if (!parsed.ok) {
       res.status(400).json({ error: 'Comentario inválido.', details: parsed.errors });
@@ -505,10 +646,26 @@ app.post(
     }
 
     const comment: PointComment = {
-      id: `comm-${Date.now()}`,
       ...parsed.value,
+      // El autor es SOLO el JWT: el `userId` del cuerpo se ignora. El nombre
+      // y el barrio son datos de vitrina (ya saneados), no de identidad.
+      userId: user.userId,
+      id: `comm-${randomUUID()}`,
       createdAt: new Date().toISOString(),
     };
+
+    await maybeVerifySchema();
+    const client = getSupabaseClient();
+    if (client) {
+      const { error } = await withSupabaseRetry('Supabase insert point_comments', () =>
+        client.from('point_comments').insert([toCommentRow(comment)]),
+      );
+      if (error) {
+        // Nunca un 201 con el insert fallido (T4): 409 colisión / 503 BD caída.
+        respondWriteFailure(res, 'el comentario', error);
+        return;
+      }
+    }
 
     memoryComments = pushInCache(memoryComments, comment);
     res.status(201).json({ comment });
@@ -667,6 +824,21 @@ async function startServer(): Promise<void> {
   await Promise.race([maybeVerifySchema(true), sleep(5_000)]);
 
   if (!isProduction) {
+    // En desarrollo Vite devuelve el shell para cualquier ruta; se interceptan
+    // antes las rutas de página inexistentes para servir la misma 404 que en
+    // producción. Los archivos y módulos pasan intactos (tienen extensión o
+    // pertenecen a los prefijos de Vite: /@, /__ , /src, /node_modules).
+    app.use((req, res, next) => {
+      if (req.method !== 'GET' && req.method !== 'HEAD') return next();
+      if (req.path === '/' || path.extname(req.path) !== '') return next();
+      if (/^\/(@|__|api|src|node_modules|images)/.test(req.path)) return next();
+      if (!req.accepts('html')) return next();
+      res
+        .status(404)
+        .set('Cache-Control', 'no-cache, must-revalidate')
+        .sendFile(path.join(__dirname, 'public', '404.html'));
+    });
+
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: 'spa',
@@ -674,9 +846,36 @@ async function startServer(): Promise<void> {
     app.use(vite.middlewares);
   } else {
     const distDir = path.resolve(__dirname, 'dist');
-    app.use(express.static(distDir));
+
+    // Assets con hash en el nombre: un año de caché e inmutables (si el
+    // contenido cambia, cambia el nombre del archivo).
+    app.use(
+      '/assets',
+      express.static(path.join(distDir, 'assets'), { immutable: true, maxAge: '365d' }),
+    );
+
+    // El resto (imágenes, favicon, 404.html): una semana. El HTML nunca se
+    // cachea para que cada visita reciba el shell más reciente.
+    app.use(
+      express.static(distDir, {
+        maxAge: '7d',
+        setHeaders: (fileRes, filePath) => {
+          if (filePath.endsWith('.html')) {
+            fileRes.setHeader('Cache-Control', 'no-cache, must-revalidate');
+          }
+        },
+      }),
+    );
+
+    // La app no tiene enrutador: toda URL distinta de «/» que no sea un archivo
+    // es una página inexistente → 404 personalizada (no el shell de la SPA).
     app.get('*', (_req: Request, res: Response) => {
-      res.sendFile(path.join(distDir, 'index.html'));
+      res.status(404).set('Cache-Control', 'no-cache, must-revalidate');
+      res.sendFile(path.join(distDir, '404.html'), (error) => {
+        if (error && !res.headersSent) {
+          res.status(404).type('text/plain').send('404 — página no encontrada');
+        }
+      });
     });
   }
 

@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { useClerk } from '@clerk/clerk-react';
+import { useAuth, useClerk } from '@clerk/clerk-react';
 import { useApp } from '../context/AppContext';
 import { CALI_BARRIOS } from '../data/initialData';
 import { UserRole } from '../types';
@@ -10,6 +10,13 @@ interface AuthModalProps {
   onClose: () => void;
   titleMessage?: string;
   onSuccess?: () => void;
+  /**
+   * Cierre que **forma parte del flujo** (se registró el perfil local o se
+   * va a entrar con cuenta existente), no una cancelación: conserva la
+   * escritura pendiente para reanudarla al entrar la sesión de Clerk.
+   * Si no se pasa, se usa `onClose`.
+   */
+  onDismiss?: () => void;
 }
 
 export const AuthModal: React.FC<AuthModalProps> = ({
@@ -17,9 +24,11 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   onClose,
   titleMessage,
   onSuccess,
+  onDismiss,
 }) => {
   const { registerUser } = useApp();
-  const { openSignIn } = useClerk();
+  const { openSignIn, openSignUp } = useClerk();
+  const { isSignedIn } = useAuth();
 
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
@@ -49,11 +58,12 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   /**
    * Entrar con la sesión de Clerk (la identidad real) en vez de crear una
    * cuenta local: se cierra **este** modal primero para no dejar dos capas
-   * apiladas y se descarta la acción pendiente (`onClose` → `closeAuthModal`).
-   * Al volver, `ClerkSync` alinea el perfil local con la sesión.
+   * apiladas y se descarta la acción de registro pendiente. Una escritura
+   * que estuviera en cola se conserva (`onDismiss`) para reanudarla al
+   * entrar. Al volver, `ClerkSync` alinea el perfil local con la sesión.
    */
   const handleSignIn = () => {
-    onClose();
+    (onDismiss ?? onClose)();
     openSignIn();
   };
 
@@ -84,7 +94,12 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     if (onSuccess) {
       onSuccess();
     }
-    onClose();
+    (onDismiss ?? onClose)();
+
+    // El registro local es el formulario de perfil; la identidad que valida
+    // el servidor es la sesión de Clerk. Si al terminar no la hay, se abre el
+    // alta para completarla: cualquier escritura en cola se reanuda al entrar.
+    if (!isSignedIn) openSignUp();
   };
 
   return (

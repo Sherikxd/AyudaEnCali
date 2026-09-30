@@ -3,8 +3,13 @@ import { createRoot } from 'react-dom/client';
 import { ClerkProvider } from '@clerk/clerk-react';
 import { resolveClerkPublishableKey } from './config/clerk.ts';
 import { ErrorBoundary } from './components/ErrorBoundary';
+import { applyConsent, readConsent } from './utils/consent.ts';
 import App from './App.tsx';
 import './index.css';
+
+// Aplica la elección de cookies guardada antes de renderizar: si la persona
+// aceptó las opcionales, las tipografías de terceros empiezan a cargarse ya.
+applyConsent(readConsent());
 
 const container = document.getElementById('root');
 if (!container) throw new Error('No se encontró el contenedor #root en index.html');

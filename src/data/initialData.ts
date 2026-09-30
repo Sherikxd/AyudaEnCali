@@ -1,4 +1,5 @@
 import { HelpPoint, HelpNeed, UserProfile } from '../types';
+import { CDN_IMAGES } from '../config/images';
 
 export const INITIAL_HELP_POINTS: HelpPoint[] = [
   {
@@ -689,7 +690,7 @@ export const INITIAL_HELP_NEEDS: HelpNeed[] = [
     status: 'activa',
     supportersCount: 18,
     createdAt: '2026-09-26T06:30:00Z',
-    imageUrl: '/images/volunteer_aid_boxes_1790469956879.jpg',
+    imageUrl: CDN_IMAGES.volunteerBoxes,
   },
   {
     id: 'need-2',
@@ -704,7 +705,7 @@ export const INITIAL_HELP_NEEDS: HelpNeed[] = [
     status: 'activa',
     supportersCount: 34,
     createdAt: '2026-09-26T08:15:00Z',
-    imageUrl: '/images/vet_animal_care_1790469966961.jpg',
+    imageUrl: CDN_IMAGES.vetAnimalCare,
   },
   {
     id: 'need-3',
@@ -719,7 +720,7 @@ export const INITIAL_HELP_NEEDS: HelpNeed[] = [
     status: 'en_proceso',
     supportersCount: 22,
     createdAt: '2026-09-25T14:00:00Z',
-    imageUrl: '/images/volunteer_aid_boxes_1790469956879.jpg',
+    imageUrl: CDN_IMAGES.volunteerBoxes,
   },
   {
     id: 'need-4',

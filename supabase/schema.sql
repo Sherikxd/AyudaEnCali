@@ -35,6 +35,12 @@ CREATE TABLE IF NOT EXISTS help_points (
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- Un reporte nuevo nace sin verificar: la verificación es un paso aparte que
+-- da un rol con permisos (semana 2). El servidor manda `verified` de forma
+-- explícita; aquí solo se alinea el valor por defecto por si algún INSERT no
+-- lo trae (idempotente: no toca filas existentes).
+ALTER TABLE help_points ALTER COLUMN verified SET DEFAULT false;
+
 -- TABLA 2: Necesidades comunitarias y reportes -----------------------------
 CREATE TABLE IF NOT EXISTS help_needs (
   id TEXT PRIMARY KEY,
@@ -63,8 +69,10 @@ CREATE INDEX IF NOT EXISTS idx_help_needs_created_at ON help_needs (created_at D
 -- TABLA 3: Apoyos individuales (la dinámica de "likes") ---------------------
 -- Fuente de verdad de *quién* apoyó *qué*: la clave primaria compuesta
 -- garantiza que una misma cuenta dé exactamente un apoyo por necesidad y
--- pueda retirarlo. `help_needs.supporters_count` sigue siendo el contador
--- visible (incluye los apoyos históricos que no tienen usuario asociado).
+-- pueda retirarlo. `help_needs.supporters_count` es solo el contador
+-- *materializado* que se muestra en el tablón: la función
+-- `toggle_need_support` lo recalcula con `count(*)` en la misma transacción
+-- en la que inserta o borra, así que nunca se desvía de esta tabla.
 CREATE TABLE IF NOT EXISTS need_supporters (
   need_id TEXT NOT NULL REFERENCES help_needs (id) ON DELETE CASCADE,
   user_id TEXT NOT NULL,
@@ -74,10 +82,28 @@ CREATE TABLE IF NOT EXISTS need_supporters (
 
 CREATE INDEX IF NOT EXISTS idx_need_supporters_user_id ON need_supporters (user_id);
 
+-- TABLA 4: Comentarios de los puntos ----------------------------------------
+-- Antes vivían solo en RAM y se perdían en cada despliegue. El servidor es
+-- quien escribe (SERVICE ROLE KEY) con la identidad tomada del JWT de Clerk:
+-- `author_id` nunca viene del cliente.
+CREATE TABLE IF NOT EXISTS point_comments (
+  id TEXT PRIMARY KEY,
+  point_id TEXT NOT NULL,
+  author_id TEXT NOT NULL,
+  author_name TEXT NOT NULL,
+  author_role TEXT DEFAULT 'ciudadano',
+  author_barrio TEXT,
+  body TEXT NOT NULL,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_point_comments_point_id ON point_comments (point_id, created_at DESC);
+
 -- Row Level Security -------------------------------------------------------
 ALTER TABLE help_points ENABLE ROW LEVEL SECURITY;
 ALTER TABLE help_needs ENABLE ROW LEVEL SECURITY;
 ALTER TABLE need_supporters ENABLE ROW LEVEL SECURITY;
+ALTER TABLE point_comments ENABLE ROW LEVEL SECURITY;
 
 DO $$
 BEGIN
@@ -145,8 +171,57 @@ END $$;
 
 -- Eliminaciones: sin políticas (nadie puede borrar desde la API con anon) --
 
--- need_supporters: RLS activo y SIN políticas a propósito -------------------
+-- need_supporters y point_comments: RLS activo y SIN políticas a propósito ----
 -- Solo el backend accede con la SERVICE ROLE KEY (que bypasea RLS). Así ni
 -- `anon` ni `authenticated` pueden descubrir qué usuario apoyó qué
--- necesidad: la API solo devuelve ese dato a la propia cuenta, con la
--- sesión de Clerk ya verificada en el servidor.
+-- necesidad ni escribir comentarios: la API solo devuelve esos datos a la
+-- propia cuenta, con la sesión de Clerk ya verificada en el servidor.
+
+-- Recuento atómico de apoyos ------------------------------------------------
+-- `toggle_need_support` hace el INSERT/DELETE en `need_supporters` y
+-- recalcula `help_needs.supporters_count` con `count(*)` **en la misma
+-- transacción**, devolviendo siempre el recuento real:
+--
+--   * bloquea la fila de la necesidad (FOR UPDATE) para que dos apoyos
+--     simultáneos se serialicen y ninguno se pierda;
+--   * `add` es idempotente (ON CONFLICT DO NOTHING) y `remove` no deja el
+--     contador en negativo (sale del recuento, no de un delta);
+--   * devuelve NULL si la necesidad no existe.
+--
+-- Solo la SERVICE ROLE puede ejecutarla con éxito: `anon` y `authenticated`
+-- no tienen permiso (REVOKE más abajo) y, aunque lo tuvieran, el RLS sin
+-- políticas de `need_supporters` les impediría escribir.
+CREATE OR REPLACE FUNCTION toggle_need_support(p_need_id TEXT, p_user_id TEXT, p_action TEXT)
+RETURNS INTEGER
+LANGUAGE plpgsql
+AS $$
+DECLARE
+  v_count INTEGER;
+BEGIN
+  IF p_action NOT IN ('add', 'remove') THEN
+    RAISE EXCEPTION 'Acción no válida: % (usa add o remove)', p_action;
+  END IF;
+
+  PERFORM 1 FROM help_needs WHERE id = p_need_id FOR UPDATE;
+  IF NOT FOUND THEN
+    RETURN NULL;
+  END IF;
+
+  IF p_action = 'add' THEN
+    INSERT INTO need_supporters (need_id, user_id)
+    VALUES (p_need_id, p_user_id)
+    ON CONFLICT (need_id, user_id) DO NOTHING;
+  ELSE
+    DELETE FROM need_supporters WHERE need_id = p_need_id AND user_id = p_user_id;
+  END IF;
+
+  SELECT count(*) INTO v_count FROM need_supporters WHERE need_id = p_need_id;
+
+  UPDATE help_needs SET supporters_count = v_count WHERE id = p_need_id;
+
+  RETURN v_count;
+END;
+$$;
+
+REVOKE EXECUTE ON FUNCTION toggle_need_support(TEXT, TEXT, TEXT) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION toggle_need_support(TEXT, TEXT, TEXT) TO service_role;

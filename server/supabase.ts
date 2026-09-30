@@ -16,9 +16,10 @@ import {
   normalizeCategory,
   normalizeNeedStatus,
   normalizePointStatus,
+  normalizeRole,
   normalizeUrgency,
 } from './validation';
-import type { HelpNeed, HelpPoint } from '../src/types';
+import type { HelpNeed, HelpPoint, PointComment } from '../src/types';
 
 /* -------------------------------------------------------------------------- */
 /* Estado compartido (lo lee GET /api/config)                                  */
@@ -110,7 +111,7 @@ export function classifySupabaseError(error: SupabaseLikeError): SupabaseErrorKi
   const code = error.code ?? '';
   const message = error.message ?? '';
 
-  if (code === 'PGRST205' || /could not find the table/i.test(message)) return 'missing';
+  if (code === 'PGRST205' || /could not find the (table|function)/i.test(message)) return 'missing';
   if (
     code === 'PGRST301' ||
     /invalid api key|api key not found|jwt (is )?(invalid|expired)|not authorized|permission denied|401 unauthorized|403/i.test(
@@ -140,9 +141,9 @@ function sqlEditorUrl(host: string | null): string {
 function missingTablesHint(host: string | null): string {
   const where = sqlEditorUrl(host);
   if (process.env.SUPABASE_ACCESS_TOKEN) {
-    return `Faltan tablas del esquema (help_points, help_needs o need_supporters). El servidor intentará crearlas solo; si no puede, pega supabase/schema.sql en ${where}.`;
+    return `Faltan tablas del esquema (help_points, help_needs, need_supporters o point_comments). El servidor intentará crearlas solo; si no puede, pega supabase/schema.sql en ${where}.`;
   }
-  return `Faltan tablas del esquema (help_points, help_needs o need_supporters). Ejecuta el esquema en ${where} (o descárgalo con GET /api/supabase/sql).`;
+  return `Faltan tablas del esquema (help_points, help_needs, need_supporters o point_comments). Ejecuta el esquema en ${where} (o descárgalo con GET /api/supabase/sql).`;
 }
 
 const AUTH_HINT = 'Claves de Supabase rechazadas: revisa SUPABASE_SERVICE_ROLE_KEY / SUPABASE_ANON_KEY en .env.';
@@ -186,7 +187,7 @@ function noteSupabaseOk(): void {
   status.tablesReady = true;
   status.hint = null;
   lastLoggedKind = null;
-  logger.info('Supabase: esquema verificado (help_points, help_needs y need_supporters accesibles).');
+  logger.info('Supabase: esquema verificado (help_points, help_needs, need_supporters y point_comments accesibles).');
 }
 
 /* -------------------------------------------------------------------------- */
@@ -237,13 +238,14 @@ const SCHEMA_PROBES: ReadonlyArray<readonly [table: string, column: string]> = [
   ['help_points', 'id'],
   ['help_needs', 'id'],
   ['need_supporters', 'need_id'],
+  ['point_comments', 'id'],
 ];
 
 async function probe(target: SupabaseClient): Promise<SupabaseErrorKind | 'ok'> {
   // Ojo: no usar `head: true` aquí. Con peticiones HEAD PostgREST no devuelve
   // cuerpo de error, así que una tabla inexistente parecería una consulta OK.
   // Se comprueba **toda** la tabla del esquema: si aparece una nueva (p. ej.
-  // need_supporters) el sondeo la detecta y se aplica/actualiza el DDL solo.
+  // point_comments) el sondeo la detecta y se aplica/actualiza el DDL solo.
   for (const [table, column] of SCHEMA_PROBES) {
     const { error } = await target.from(table).select(column).limit(1);
     if (error) return classifySupabaseError(error);
@@ -324,7 +326,7 @@ async function verify(): Promise<void> {
     status.tablesReady = false;
     status.hint =
       applied && !applied.ok
-        ? `Faltan tablas del esquema (help_points, help_needs o need_supporters) y no se pudieron crear (${applied.message}). Pega supabase/schema.sql en ${sqlEditorUrl(status.host)}.`
+        ? `Faltan tablas del esquema (help_points, help_needs, need_supporters o point_comments) y no se pudieron crear (${applied.message}). Pega supabase/schema.sql en ${sqlEditorUrl(status.host)}.`
         : missingTablesHint(status.host);
     logOnce('missing', `Supabase: ${status.hint}`);
     return;
@@ -514,5 +516,42 @@ export function toNeedRow(need: HelpNeed): HelpNeedRow {
     supporters_count: need.supportersCount,
     image_url: need.imageUrl,
     created_at: need.createdAt,
+  };
+}
+
+export interface PointCommentRow {
+  id?: string;
+  point_id?: string;
+  author_id?: string;
+  author_name?: string;
+  author_role?: string | null;
+  author_barrio?: string | null;
+  body?: string;
+  created_at?: string;
+}
+
+export function mapCommentRow(row: PointCommentRow): PointComment {
+  return {
+    id: String(row.id ?? ''),
+    pointId: String(row.point_id ?? ''),
+    userId: String(row.author_id ?? ''),
+    userName: String(row.author_name ?? ''),
+    userRole: normalizeRole(row.author_role),
+    userBarrio: row.author_barrio ? String(row.author_barrio) : undefined,
+    comment: String(row.body ?? ''),
+    createdAt: row.created_at ?? new Date().toISOString(),
+  };
+}
+
+export function toCommentRow(comment: PointComment): PointCommentRow {
+  return {
+    id: comment.id,
+    point_id: comment.pointId,
+    author_id: comment.userId,
+    author_name: comment.userName,
+    author_role: comment.userRole,
+    author_barrio: comment.userBarrio ?? null,
+    body: comment.comment,
+    created_at: comment.createdAt,
   };
 }

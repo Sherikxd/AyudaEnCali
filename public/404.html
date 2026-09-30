@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Página no encontrada (404) — AyudaEnCali</title>
+    <meta name="robots" content="noindex,follow" />
+    <meta name="theme-color" content="#EA580C" />
+    <meta name="description" content="La página que buscas no existe en AyudaEnCali. Vuelve al mapa de ayuda y emergencias de Cali." />
+    <meta property="og:site_name" content="AyudaEnCali" />
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content="Página no encontrada (404) — AyudaEnCali" />
+    <meta property="og:description" content="La página que buscas no existe. Vuelve al mapa de ayuda y emergencias de Cali." />
+    <meta
+      property="og:image"
+      content="https://res.cloudinary.com/z2t43npi/image/upload/c_fill,w_1200,h_630,f_jpg,q_auto/ayudaencali/og_ayudaencali"
+    />
+    <meta name="twitter:card" content="summary_large_image" />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <!-- Autocontenida a propósito: la página de error debe cargarse siempre,
+         incluso sin conexión a la base de datos ni a CDN externos. -->
+    <style>
+      :root {
+        color-scheme: light;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 24px;
+        background: #f8fafc;
+        color: #0f172a;
+        font-family:
+          -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+        -webkit-font-smoothing: antialiased;
+      }
+      .card {
+        width: 100%;
+        max-width: 440px;
+        background: #ffffff;
+        border: 1px solid #e2e8f0;
+        border-radius: 24px;
+        box-shadow: 0 20px 45px -25px rgba(15, 23, 42, 0.35);
+        padding: 32px 28px;
+        text-align: center;
+      }
+      .mark {
+        width: 48px;
+        height: 48px;
+        border-radius: 14px;
+        background: #ea580c;
+        margin: 0 auto 18px;
+        position: relative;
+      }
+      .mark::before,
+      .mark::after {
+        content: '';
+        position: absolute;
+        background: #ffffff;
+        border-radius: 4px;
+      }
+      .mark::before {
+        width: 6px;
+        height: 24px;
+        left: 21px;
+        top: 12px;
+      }
+      .mark::after {
+        width: 24px;
+        height: 6px;
+        left: 12px;
+        top: 21px;
+      }
+      .code {
+        font-size: 56px;
+        font-weight: 800;
+        letter-spacing: -0.03em;
+        color: #ea580c;
+        line-height: 1;
+        margin: 0;
+      }
+      h1 {
+        font-size: 19px;
+        font-weight: 800;
+        margin: 10px 0 8px;
+      }
+      p {
+        font-size: 14px;
+        line-height: 1.6;
+        color: #64748b;
+        margin: 0 0 22px;
+      }
+      .actions {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+      }
+      .btn {
+        display: inline-block;
+        padding: 12px 18px;
+        border-radius: 14px;
+        font-size: 14px;
+        font-weight: 700;
+        text-decoration: none;
+        transition: background-color 0.15s ease;
+      }
+      .btn-primary {
+        background: #ea580c;
+        color: #ffffff;
+      }
+      .btn-primary:hover {
+        background: #c2410c;
+      }
+      .btn-ghost {
+        background: #f1f5f9;
+        color: #334155;
+      }
+      .btn-ghost:hover {
+        background: #e2e8f0;
+      }
+      .emergency {
+        margin-top: 20px;
+        padding-top: 16px;
+        border-top: 1px solid #f1f5f9;
+        font-size: 12px;
+        color: #94a3b8;
+      }
+      .emergency a {
+        color: #e11d48;
+        font-weight: 700;
+        text-decoration: none;
+      }
+      .brand {
+        margin-top: 18px;
+        font-size: 12px;
+        color: #94a3b8;
+      }
+      .brand strong {
+        color: #334155;
+      }
+    </style>
+  </head>
+  <body>
+    <main class="card">
+      <div class="mark" aria-hidden="true"></div>
+      <p class="code">404</p>
+      <h1>Esta página no existe</h1>
+      <p>
+        El enlace puede estar roto o la dirección estar mal escrita. Lo importante sigue aquí: el
+        mapa y el tablón de ayuda de Cali.
+      </p>
+
+      <div class="actions">
+        <a class="btn btn-primary" href="/">Volver al mapa de ayuda</a>
+        <a class="btn btn-ghost" href="/#preguntas-frecuentes">Ver preguntas frecuentes</a>
+      </div>
+
+      <p class="emergency">
+        ¿Es una emergencia real? Llama al <a href="tel:123">123</a> (Bomberos, Ambulancia y Policía).
+      </p>
+      <p class="brand">
+        <strong>AyudaEnCali</strong> · Plataforma comunitaria de emergencias de Santiago de Cali
+      </p>
+    </main>
+  </body>
+</html>

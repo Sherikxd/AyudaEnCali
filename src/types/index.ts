@@ -8,7 +8,17 @@ export type NeedStatus = 'activa' | 'en_proceso' | 'resuelta';
 
 export type UserRole = 'ciudadano' | 'voluntario' | 'coordinador';
 
-export interface HelpPoint {
+/**
+ * Elemento creado en este dispositivo y **todavía no confirmado** por el
+ * servidor (p. ej. reportado con el servidor caído). El flag vive solo en el
+ * cliente: se conserva en cada sync y se retira en cuanto el servidor lo
+ * acepta, para poder reintentarlo y avisar de que sigue pendiente.
+ */
+export interface PendingLocal {
+  pending?: boolean;
+}
+
+export interface HelpPoint extends PendingLocal {
   id: string;
   name: string;
   category: HelpCategory;
@@ -31,7 +41,7 @@ export interface HelpPoint {
   authorId?: string;
 }
 
-export interface HelpNeed {
+export interface HelpNeed extends PendingLocal {
   id: string;
   title: string;
   description: string;
@@ -60,7 +70,7 @@ export interface UserProfile {
   savedPointIds: string[];
 }
 
-export interface PointComment {
+export interface PointComment extends PendingLocal {
   id: string;
   pointId: string;
   userId: string;
@@ -117,6 +127,25 @@ export interface PointResponse {
 
 export interface NeedResponse {
   need: HelpNeed;
+}
+
+export interface CommentResponse {
+  comment: PointComment;
+}
+
+/* ---------------------------------------------------------------------------
+ * Avisos efímeros (toasts) del cliente. Sin dependencias: solo estado del
+ * contexto + un componente con `aria-live="polite"`.
+ * ------------------------------------------------------------------------- */
+
+/** Tipo de aviso: colorea el toast y define el texto accesible. */
+export type ToastKind = 'success' | 'error' | 'warning' | 'info';
+
+export interface ToastItem {
+  /** Identidad estable (clave de React y para descartarla a mano). */
+  id: number;
+  kind: ToastKind;
+  message: string;
 }
 
 /** Acción de apoyo: `add` da el like, `remove` lo retira (una sola vez por usuario). */

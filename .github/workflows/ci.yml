@@ -60,6 +60,13 @@ jobs:
 
       - name: Tests (jsdom)
         run: npm run test:ui
+        env:
+          # El runner no tiene .env (es gitignored): el test solo monta
+          # ClerkProvider en jsdom con el fetch mockeado, así que basta una
+          # clave con formato válido (pk_test_<base64 de dominio$>).
+          # Si algún día se quiere la clave real, definir el secreto de
+          # repo VITE_CLERK_PUBLISHABLE_KEY y este || la usará.
+          VITE_CLERK_PUBLISHABLE_KEY: ${{ secrets.VITE_CLERK_PUBLISHABLE_KEY || 'pk_test_Y2xlcmsuZXhhbXBsZS5jb20k' }}
 
       - name: Humo de las funciones de Vercel
         run: npm run smoke:vercel

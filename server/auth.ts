@@ -1,7 +1,7 @@
 import type { IncomingHttpHeaders } from 'node:http';
 import { verifyToken } from '@clerk/backend';
-import { errorMessage, logger } from './logger';
-import type { JsonResponder } from './http';
+import { errorMessage, logger } from './logger.js';
+import type { JsonResponder } from './http.js';
 
 /**
  * Verificación de sesiones de Clerk en el servidor.

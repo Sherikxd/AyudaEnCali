@@ -8,9 +8,9 @@
  * Ojo: este módulo ya **no** exporta la app Express (antes era la única
  * función). La app sigue viva en `server/app.ts` para `server.ts`.
  */
-import '../server/bootstrap'; // entorno primero: dotenv + initSupabase()
-import { notFoundResult, type ApiHandler } from '../server/http';
-import { createApiRoute } from '../server/vercel';
+import '../server/bootstrap.js'; // entorno primero: dotenv + initSupabase()
+import { notFoundResult, type ApiHandler } from '../server/http.js';
+import { createApiRoute } from '../server/vercel.js';
 
 const notFoundHandler: ApiHandler = (input) => notFoundResult(input);
 

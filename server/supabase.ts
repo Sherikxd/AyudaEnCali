@@ -10,17 +10,17 @@
  *  - Todas las peticiones llevan timeout para no dejar colgado el proceso.
  */
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
-import { errorMessage, logger } from './logger';
-import type { JsonResponder } from './http';
-import { applySupabaseSchema, projectRefFromHost, type ApplyResult } from './schemaAdmin';
+import { errorMessage, logger } from './logger.js';
+import type { JsonResponder } from './http.js';
+import { applySupabaseSchema, projectRefFromHost, type ApplyResult } from './schemaAdmin.js';
 import {
   normalizeCategory,
   normalizeNeedStatus,
   normalizePointStatus,
   normalizeRole,
   normalizeUrgency,
-} from './validation';
-import type { HelpNeed, HelpPoint, PointComment } from '../src/types';
+} from './validation.js';
+import type { HelpNeed, HelpPoint, PointComment } from '../src/types/index.js';
 
 /* -------------------------------------------------------------------------- */
 /* Estado compartido (lo lee GET /api/config)                                  */

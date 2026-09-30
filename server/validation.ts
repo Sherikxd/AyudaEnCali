@@ -6,7 +6,7 @@ import type {
   NeedUrgency,
   PointStatus,
   UserRole,
-} from '../src/types';
+} from '../src/types/index.js';
 
 /**
  * Validación y saneamiento de los payloads que llegan por HTTP.

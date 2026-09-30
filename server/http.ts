@@ -11,7 +11,7 @@
  * mismos helpers a `ServerResponse`).
  */
 import type { IncomingHttpHeaders, IncomingMessage } from 'node:http';
-import { errorMessage, logger } from './logger';
+import { errorMessage, logger } from './logger.js';
 
 /** Respuesta JSON mínima que comparten Express y Vercel. */
 export interface JsonResponder {

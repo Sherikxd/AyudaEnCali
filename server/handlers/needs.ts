@@ -1,9 +1,9 @@
 import { randomUUID } from 'node:crypto';
-import type { ApiHandler } from '../http';
-import { effectiveMethod, notFoundResult } from '../http';
-import { getAuthenticatedUser, respondUnauthorized } from '../auth';
-import { writeLimiter } from '../limiters';
-import { memory, pushInCache } from '../store';
+import type { ApiHandler } from '../http.js';
+import { effectiveMethod, notFoundResult } from '../http.js';
+import { getAuthenticatedUser, respondUnauthorized } from '../auth.js';
+import { writeLimiter } from '../limiters.js';
+import { memory, pushInCache } from '../store.js';
 import {
   getSupabaseClient,
   mapNeedRow,
@@ -11,10 +11,10 @@ import {
   respondWriteFailure,
   toNeedRow,
   withSupabaseRetry,
-} from '../supabase';
-import type { HelpNeedRow } from '../supabase';
-import { validateNeed } from '../validation';
-import type { HelpNeed } from '../../src/types';
+} from '../supabase.js';
+import type { HelpNeedRow } from '../supabase.js';
+import { validateNeed } from '../validation.js';
+import type { HelpNeed } from '../../src/types/index.js';
 
 /**
  * `GET /api/needs` · `POST /api/needs`.

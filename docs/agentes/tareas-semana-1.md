@@ -302,3 +302,25 @@ instalado **fuera** del repo) y corregido en `vercel.json`:
 `vite build` ✅ · `test:ui` 40/40 ✅ · `smoke:vercel` 35/35 ✅. Detalle en
 `memoria/15-correccion-vercel-json.md`. **Pendiente:** commit+push de la
 persona y primer deploy verde.
+
+## Hotfix · Todas las funciones 500 en producción (imports ESM) — ✅ (2026-09-30)
+
+El deploy `a466c33` quedó `Ready` pero `/api/*` respondía
+`FUNCTION_INVOCATION_FAILED` (500) en **todas** las funciones → la app
+mostraba «Sin conexión con el servidor». Causa raíz **reproducida con el
+build real de `@vercel/node`** en local (compilar + extraer el lambda +
+invocar): Node ESM exige extensiones explícitas y el build emitía
+`import '../server/bootstrap'` sin reescribir →
+`ERR_MODULE_NOT_FOUND` al cargar cada función (tsx/Vite sí lo resuelven,
+por eso en local nunca falló).
+
+**Fix:** `.js` explícito en **todos** los imports relativos con valor de
+`api/**` y `server/**` (34 ficheros, 130 líneas; los de directorio →
+`/index.js`). Regla permanente anotada en `decisiones.md`.
+
+**Resultado:** `lint` ✅ · `vite build` ✅ · `test:ui` 40/40 ✅ ·
+`smoke:vercel` 35/35 ✅ · **10/10 lambdas compilados invocados con éxito**
+(salud, config, SQL real, 401 de apoyo, 404 del espejo y del catch-all,
+200 de puntos/necesidades/comentarios). Detalle en
+`memoria/16-imports-esm-vercel.md`. **Pendiente:** commit+push y verificar
+el deploy + `SMOKE_BASE_URL=https://ayuda-en-cali.vercel.app npm run smoke:vercel`.

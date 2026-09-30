@@ -13,10 +13,10 @@
  * Si Supabase no responde se conserva la caché actual (la semilla) y se
  * reintenta antes de que venza el TTL: nunca rompe la respuesta.
  */
-import { errorMessage, logger } from './logger';
-import { memory } from './store';
-import { getSupabaseClient, mapNeedRow, mapPointRow, withSupabaseRetry } from './supabase';
-import type { HelpNeedRow, HelpPointRow } from './supabase';
+import { errorMessage, logger } from './logger.js';
+import { memory } from './store.js';
+import { getSupabaseClient, mapNeedRow, mapPointRow, withSupabaseRetry } from './supabase.js';
+import type { HelpNeedRow, HelpPointRow } from './supabase.js';
 
 /** Caducidad del contexto en memoria (por instancia de función/proceso). */
 const CONTEXT_TTL_MS = 30_000;

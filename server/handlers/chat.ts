@@ -1,12 +1,12 @@
 import { GoogleGenAI } from '@google/genai';
-import type { ApiHandler } from '../http';
-import { effectiveMethod, notFoundResult } from '../http';
-import { chatLimiter } from '../limiters';
-import { ensureContextFresh } from '../context';
-import { errorMessage, logger } from '../logger';
-import { memory } from '../store';
-import { LIMITS, validateChat } from '../validation';
-import type { ChatResponse } from '../../src/types';
+import type { ApiHandler } from '../http.js';
+import { effectiveMethod, notFoundResult } from '../http.js';
+import { chatLimiter } from '../limiters.js';
+import { ensureContextFresh } from '../context.js';
+import { errorMessage, logger } from '../logger.js';
+import { memory } from '../store.js';
+import { LIMITS, validateChat } from '../validation.js';
+import type { ChatResponse } from '../../src/types/index.js';
 
 /* -------------------------------------------------------------------------- */
 /* Cliente de Gemini (solo desde variables de entorno)                          */

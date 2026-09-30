@@ -5,7 +5,7 @@
  * cada función tiene su propio aislamiento, igual que cualquier límite en
  * memoria por despliegue.
  */
-import { createRateLimiter } from './rateLimit';
+import { createRateLimiter } from './rateLimit.js';
 
 /** Escrituras autenticadas (puntos, necesidades, apoyos y comentarios). */
 export const writeLimiter = createRateLimiter({

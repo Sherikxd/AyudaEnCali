@@ -1,9 +1,9 @@
 import { randomUUID } from 'node:crypto';
-import type { ApiHandler } from '../http';
-import { effectiveMethod, notFoundResult } from '../http';
-import { getAuthenticatedUser, respondUnauthorized } from '../auth';
-import { writeLimiter } from '../limiters';
-import { memory, pushInCache } from '../store';
+import type { ApiHandler } from '../http.js';
+import { effectiveMethod, notFoundResult } from '../http.js';
+import { getAuthenticatedUser, respondUnauthorized } from '../auth.js';
+import { writeLimiter } from '../limiters.js';
+import { memory, pushInCache } from '../store.js';
 import {
   getSupabaseClient,
   mapPointRow,
@@ -11,10 +11,10 @@ import {
   respondWriteFailure,
   toPointRow,
   withSupabaseRetry,
-} from '../supabase';
-import type { HelpPointRow } from '../supabase';
-import { validatePoint } from '../validation';
-import type { HelpPoint } from '../../src/types';
+} from '../supabase.js';
+import type { HelpPointRow } from '../supabase.js';
+import { validatePoint } from '../validation.js';
+import type { HelpPoint } from '../../src/types/index.js';
 
 /**
  * `GET /api/points` · `POST /api/points`.

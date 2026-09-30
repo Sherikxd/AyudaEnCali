@@ -1,9 +1,9 @@
-import type { ApiHandler } from '../http';
-import { effectiveMethod, notFoundResult } from '../http';
-import { getAuthenticatedUser, respondUnauthorized } from '../auth';
-import { allSupporters } from '../store';
-import { getSupabaseClient, withSupabaseRetry } from '../supabase';
-import type { MySupportsResponse } from '../../src/types';
+import type { ApiHandler } from '../http.js';
+import { effectiveMethod, notFoundResult } from '../http.js';
+import { getAuthenticatedUser, respondUnauthorized } from '../auth.js';
+import { allSupporters } from '../store.js';
+import { getSupabaseClient, withSupabaseRetry } from '../supabase.js';
+import type { MySupportsResponse } from '../../src/types/index.js';
 
 /**
  * `GET /api/support/mine` — apoyos de la cuenta que hace la petición (el

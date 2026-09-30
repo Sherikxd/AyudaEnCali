@@ -1,18 +1,18 @@
-import type { ApiHandler, ApiRequest } from '../http';
-import { effectiveMethod, notFoundResult } from '../http';
-import { getAuthenticatedUser, respondUnauthorized } from '../auth';
-import { writeLimiter } from '../limiters';
-import { getSupporterSet, memory, pushInCache } from '../store';
+import type { ApiHandler, ApiRequest } from '../http.js';
+import { effectiveMethod, notFoundResult } from '../http.js';
+import { getAuthenticatedUser, respondUnauthorized } from '../auth.js';
+import { writeLimiter } from '../limiters.js';
+import { getSupporterSet, memory, pushInCache } from '../store.js';
 import {
   classifySupabaseError,
   getSupabaseClient,
   mapNeedRow,
   respondWriteFailure,
   withSupabaseRetry,
-} from '../supabase';
-import type { HelpNeedRow } from '../supabase';
-import { sanitizeParam } from '../validation';
-import type { HelpNeed, SupportAction, SupportResponse } from '../../src/types';
+} from '../supabase.js';
+import type { HelpNeedRow } from '../supabase.js';
+import { sanitizeParam } from '../validation.js';
+import type { HelpNeed, SupportAction, SupportResponse } from '../../src/types/index.js';
 
 /** Acciones aceptadas por `POST /api/needs/:id/support`. */
 const SUPPORT_ACTIONS: ReadonlySet<string> = new Set<string>(['add', 'remove']);

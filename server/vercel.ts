@@ -18,8 +18,8 @@ import {
   setSecurityHeaders,
   type ApiHandler,
   type ApiRequest,
-} from './http';
-import { errorMessage, logger } from './logger';
+} from './http.js';
+import { errorMessage, logger } from './logger.js';
 
 /** Petición de Vercel: `IncomingMessage` con el cuerpo pre-parseado. */
 export interface VercelRequest extends IncomingMessage {

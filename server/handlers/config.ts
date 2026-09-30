@@ -1,7 +1,7 @@
-import type { ApiHandler } from '../http';
-import { effectiveMethod, notFoundResult } from '../http';
-import { getSupabaseStatus, maybeVerifySchema } from '../supabase';
-import type { ConfigResponse } from '../../src/types';
+import type { ApiHandler } from '../http.js';
+import { effectiveMethod, notFoundResult } from '../http.js';
+import { getSupabaseStatus, maybeVerifySchema } from '../supabase.js';
+import type { ConfigResponse } from '../../src/types/index.js';
 
 /**
  * `GET /api/config`: estado del despliegue para el cliente.

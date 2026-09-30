@@ -1,6 +1,6 @@
 import type { ErrorRequestHandler, Request, RequestHandler, Response } from 'express';
-import { errorMessage, logger } from './logger';
-import { setSecurityHeaders } from './http';
+import { errorMessage, logger } from './logger.js';
+import { setSecurityHeaders } from './http.js';
 
 /** Cabeceras básicas de seguridad aplicadas a toda la API. */
 export const securityHeaders: RequestHandler = (_req: Request, res: Response, next) => {

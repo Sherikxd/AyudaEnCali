@@ -15,7 +15,7 @@
  *    configuración, la API responde desde la caché en memoria.
  */
 import dotenv from 'dotenv';
-import { initSupabase } from './supabase';
+import { initSupabase } from './supabase.js';
 
 if (!process.env.VERCEL) dotenv.config();
 

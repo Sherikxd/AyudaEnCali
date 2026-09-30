@@ -126,3 +126,21 @@ Hobby gratis).
 *Por qué:* el multiplicador es **más permisivo, nunca restrictivo**, así que
 nadie que funcionaba en Express deja de funcionar; el hardening exterior es
 una decisión de producto cuando haya presupuesto.
+
+**2026-09-30 · Imports relativos con `.js` explícito en `api/` y `server/`
+(fix del primer deploy).** Todos los imports relativos con valor llevan la
+extensión resolutiva (`'../server/vercel.js'`, `'../src/types/index.js'`),
+que es lo que Node ESM exige en el lambda de Vercel: el build de
+`@vercel/node` emite los `.ts` como `.js` ESM (`"type": "module"`) y **no
+reescribe** los especificadores, de modo que un `'../server/bootstrap'`
+acababa en `ERR_MODULE_NOT_FOUND` al cargar → *todas* las funciones
+`FUNCTION_INVOCATION_FAILED` en el primer deploy (reproducido con el build
+real de `@vercel/node` en local: compila, extrae el lambda e invoca).
+*Descartado:* compilar a CommonJS (exige `import.meta` opcional y un
+`package.json` del lambda en contradicción con `"type": "module"`) y
+bundle experimental de funciones (no probado en plan Hobby).
+*Por qué:* es la solución documentada por Vercel para paquetes ESM, TS la
+resuelve a `.ts` en el typecheck, tsx la resuelve en local y Vite no toca
+`server/**`; coste: una regla fija para futuros imports — **siempre `.js`
+explícito en `api/` y `server/`** (los *type-only* no importan pero se
+dejan igual por coherencia).

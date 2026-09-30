@@ -1,6 +1,6 @@
 import type { NextFunction, Request, Response } from 'express';
-import type { JsonResponder } from './http';
-import { clientIp } from './http';
+import type { JsonResponder } from './http.js';
+import { clientIp } from './http.js';
 
 export interface RateLimitOptions {
   /** Ventana de tiempo en milisegundos. */

@@ -15,21 +15,21 @@
  * arrastra este fichero, y Vite pesa y fallaría en el build. `createViteServer`
  * vive por eso solo en `server.ts`, que Vercel no ejecuta.
  */
-import './bootstrap'; // entorno primero: dotenv + initSupabase()
+import './bootstrap.js'; // entorno primero: dotenv + initSupabase()
 import express, { type NextFunction, type Request, type Response } from 'express';
 import compression from 'compression';
 
-import { apiNotFound, errorHandler, securityHeaders } from './middleware';
-import { clientIp, type ApiHandler, type ApiRequest } from './http';
-import { healthHandler } from './handlers/health';
-import { configHandler } from './handlers/config';
-import { sqlHandler } from './handlers/sql';
-import { pointsHandler } from './handlers/points';
-import { needsHandler } from './handlers/needs';
-import { needsSupportHandler } from './handlers/needsSupport';
-import { supportMineHandler } from './handlers/supportMine';
-import { commentsHandler } from './handlers/comments';
-import { chatHandler } from './handlers/chat';
+import { apiNotFound, errorHandler, securityHeaders } from './middleware.js';
+import { clientIp, type ApiHandler, type ApiRequest } from './http.js';
+import { healthHandler } from './handlers/health.js';
+import { configHandler } from './handlers/config.js';
+import { sqlHandler } from './handlers/sql.js';
+import { pointsHandler } from './handlers/points.js';
+import { needsHandler } from './handlers/needs.js';
+import { needsSupportHandler } from './handlers/needsSupport.js';
+import { supportMineHandler } from './handlers/supportMine.js';
+import { commentsHandler } from './handlers/comments.js';
+import { chatHandler } from './handlers/chat.js';
 
 const isProduction = process.env.NODE_ENV === 'production';
 

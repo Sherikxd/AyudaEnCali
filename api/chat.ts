@@ -6,10 +6,10 @@
  * cada función es un módulo aislado con su propia `memory`, y sin esta
  * precarga el asistente respondería con la semilla en el primer deploy.
  */
-import '../server/bootstrap'; // entorno primero: dotenv + initSupabase()
-import { warmContext } from '../server/context';
-import { createApiRoute } from '../server/vercel';
-import { chatHandler } from '../server/handlers/chat';
+import '../server/bootstrap.js'; // entorno primero: dotenv + initSupabase()
+import { warmContext } from '../server/context.js';
+import { createApiRoute } from '../server/vercel.js';
+import { chatHandler } from '../server/handlers/chat.js';
 
 warmContext(); // fire-and-forget: nunca rechaza
 

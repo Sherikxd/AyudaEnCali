@@ -1,6 +1,6 @@
-import type { ApiHandler } from '../http';
-import { effectiveMethod, notFoundResult } from '../http';
-import { SUPABASE_SQL } from '../schema';
+import type { ApiHandler } from '../http.js';
+import { effectiveMethod, notFoundResult } from '../http.js';
+import { SUPABASE_SQL } from '../schema.js';
 
 /**
  * `GET /api/supabase/sql`: el esquema completo para el SQL Editor.

@@ -11,8 +11,8 @@
  *  - Solo se ejecuta cuando el sondeo detectó que **faltan** las tablas.
  *  - `supabase/schema.sql` es idempotente, así que repetirlo es seguro.
  */
-import { errorMessage } from './logger';
-import { SUPABASE_SQL } from './schema';
+import { errorMessage } from './logger.js';
+import { SUPABASE_SQL } from './schema.js';
 
 const MANAGEMENT_API = 'https://api.supabase.com/v1';
 const REQUEST_TIMEOUT_MS = 30_000;

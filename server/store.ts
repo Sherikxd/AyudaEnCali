@@ -6,8 +6,8 @@
  * contenedor y en Vercel cada función tiene su propio aislamiento (una
  * instancia por módulo), igual que cualquier otro estado en memoria.
  */
-import { INITIAL_COMMENTS, INITIAL_HELP_NEEDS, INITIAL_HELP_POINTS } from './seedData';
-import type { HelpNeed, HelpPoint, PointComment } from '../src/types';
+import { INITIAL_COMMENTS, INITIAL_HELP_NEEDS, INITIAL_HELP_POINTS } from './seedData.js';
+import type { HelpNeed, HelpPoint, PointComment } from '../src/types/index.js';
 
 /** Tope de elementos que se mantienen en memoria como caché de respaldo. */
 const MAX_CACHED_ITEMS = 500;

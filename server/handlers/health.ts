@@ -1,5 +1,5 @@
-import type { ApiHandler } from '../http';
-import { effectiveMethod, notFoundResult } from '../http';
+import type { ApiHandler } from '../http.js';
+import { effectiveMethod, notFoundResult } from '../http.js';
 
 /**
  * `GET /api/health`: sonda de vida del despliegue (sin límite ni auth).

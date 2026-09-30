@@ -1,9 +1,9 @@
 import { randomUUID } from 'node:crypto';
-import type { ApiHandler } from '../http';
-import { effectiveMethod, notFoundResult } from '../http';
-import { getAuthenticatedUser, respondUnauthorized } from '../auth';
-import { writeLimiter } from '../limiters';
-import { memory, pushInCache } from '../store';
+import type { ApiHandler } from '../http.js';
+import { effectiveMethod, notFoundResult } from '../http.js';
+import { getAuthenticatedUser, respondUnauthorized } from '../auth.js';
+import { writeLimiter } from '../limiters.js';
+import { memory, pushInCache } from '../store.js';
 import {
   getSupabaseClient,
   mapCommentRow,
@@ -11,10 +11,10 @@ import {
   respondWriteFailure,
   toCommentRow,
   withSupabaseRetry,
-} from '../supabase';
-import type { PointCommentRow } from '../supabase';
-import { sanitizeParam, validateComment } from '../validation';
-import type { PointComment } from '../../src/types';
+} from '../supabase.js';
+import type { PointCommentRow } from '../supabase.js';
+import { sanitizeParam, validateComment } from '../validation.js';
+import type { PointComment } from '../../src/types/index.js';
 
 /**
  * `GET /api/comments` · `POST /api/comments`.

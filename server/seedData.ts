@@ -1,5 +1,5 @@
-import type { HelpNeed, HelpPoint, PointComment } from '../src/types';
-import { CDN_IMAGES } from '../src/config/images';
+import type { HelpNeed, HelpPoint, PointComment } from '../src/types/index.js';
+import { CDN_IMAGES } from '../src/config/images.js';
 
 /**
  * Datos semilla (fallback) usados cuando Supabase no está configurado o no

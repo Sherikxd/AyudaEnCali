@@ -1,48 +1,180 @@
 import { randomUUID } from 'node:crypto';
-import type { ApiHandler } from '../http.js';
+import type { ApiHandler, ApiRequest, ApiResult, JsonResponder } from '../http.js';
 import { effectiveMethod, notFoundResult } from '../http.js';
 import { getAuthenticatedUser, respondUnauthorized } from '../auth.js';
-import { writeLimiter } from '../limiters.js';
-import { memory, pushInCache } from '../store.js';
+import { readLimiter, writeLimiter } from '../limiters.js';
+import { pageMeta, paginate, readPageParams, type PageParams } from '../pagination.js';
+import { resolveEntityId } from '../resourceId.js';
+import { memory, pushInCache, removeFromCache, replaceInCache } from '../store.js';
 import {
   getSupabaseClient,
   mapNeedRow,
   maybeVerifySchema,
   respondWriteFailure,
+  toNeedPatchRow,
   toNeedRow,
   withSupabaseRetry,
 } from '../supabase.js';
 import type { HelpNeedRow } from '../supabase.js';
-import { validateNeed } from '../validation.js';
-import type { HelpNeed } from '../../src/types/index.js';
+import type { HelpNeedWithAuthor } from '../entities.js';
+import { validateNeed, validateNeedUpdate } from '../validation.js';
 
 /**
- * `GET /api/needs` · `POST /api/needs`.
+ * `GET · POST /api/needs` · `PATCH · DELETE /api/needs/:id`.
  *
- * Mismo patrón que los puntos: lectura con respaldo en memoria y escritura
- * autenticada.
+ * Lectura con respaldo en memoria y paginación opcional (T3); escritura y
+ * ciclo de vida autenticados (T1/T2): la autoría sale del JWT y solo el
+ * autor puede editar o borrar su necesidad (403 para el resto; el rol
+ * moderador llegará en T7).
  */
-export const needsHandler: ApiHandler = async (input, res) => {
-  const method = effectiveMethod(input.method);
 
-  if (method === 'GET') {
+/** Lee la necesidad de la caché o, si no está, de la base de datos. */
+async function loadNeed(id: string): Promise<HelpNeedWithAuthor | null> {
+  const cached = memory.needs.find((need) => need.id === id);
+  if (cached) return cached;
+
+  await maybeVerifySchema();
+  const client = getSupabaseClient();
+  if (client) {
+    const { data, error } = await withSupabaseRetry<HelpNeedRow[]>('Supabase select help_needs', () =>
+      client.from('help_needs').select('*').eq('id', id).limit(1),
+    );
+    if (!error && Array.isArray(data) && data[0]) {
+      const need = mapNeedRow(data[0]);
+      memory.needs = pushInCache(memory.needs, need);
+      return need;
+    }
+  }
+  return null;
+}
+
+/** `true` solo si `authorId` es el `sub` del JWT presente (T2: 403 si no). */
+function isAuthor(authorId: string | undefined, userId: string): boolean {
+  return typeof authorId === 'string' && authorId.length > 0 && authorId === userId;
+}
+
+/**
+ * `PATCH /api/needs/:id` y `DELETE /api/needs/:id`.
+ *
+ * Orden: límite de tasa → sesión (401) → existencia (404) → autoría (403)
+ * → validación estricta del parche (400). Un `status` fuera de
+ * `activa|en_proceso|resuelta` se rechaza, no se corrige en silencio.
+ */
+async function lifecycle(
+  input: ApiRequest,
+  res: JsonResponder,
+  method: string,
+  id: string,
+): Promise<ApiResult> {
+  if (method !== 'PATCH' && method !== 'DELETE') return notFoundResult(input);
+  if (writeLimiter.enforce(input.clientIp, res)) return null;
+
+  const user = await getAuthenticatedUser(input);
+  if (!user) {
+    respondUnauthorized(res, 'Debes iniciar sesión para editar una necesidad.');
+    return null;
+  }
+
+  const need = await loadNeed(id);
+  if (!need) return { status: 404, body: { error: 'Necesidad no encontrada.' } };
+  if (!isAuthor(need.authorId, user.userId)) {
+    return { status: 403, body: { error: 'Solo quien publicó la necesidad puede modificarla.' } };
+  }
+
+  if (method === 'DELETE') {
     await maybeVerifySchema();
     const client = getSupabaseClient();
-
     if (client) {
-      const { data, error } = await withSupabaseRetry<HelpNeedRow[]>('Supabase help_needs', () =>
-        client.from('help_needs').select('*').order('created_at', { ascending: false }),
+      // Los apoyos se van con ella (FK `ON DELETE CASCADE` del esquema).
+      const { error } = await withSupabaseRetry('Supabase delete help_needs', () =>
+        client.from('help_needs').delete().eq('id', need.id),
       );
-
-      if (!error && Array.isArray(data) && data.length > 0) {
-        const needs = data.map(mapNeedRow);
-        memory.needs = needs;
-        return { status: 200, body: { needs, source: 'supabase' } };
+      if (error) {
+        respondWriteFailure(res, 'la necesidad', error);
+        return null;
       }
     }
-
-    return { status: 200, body: { needs: memory.needs, source: 'memory_cache' } };
+    memory.needs = removeFromCache(memory.needs, need.id);
+    return { status: 200, body: { success: true, id: need.id } };
   }
+
+  const parsed = validateNeedUpdate(input.body);
+  if (!parsed.ok) {
+    return { status: 400, body: { error: 'Datos de necesidad inválidos.', details: parsed.errors } };
+  }
+
+  const patch = parsed.value;
+  const updated: HelpNeedWithAuthor = {
+    ...need,
+    ...patch,
+    // Ni el id, ni la autoría, ni el recuento de apoyos cambian al editar:
+    // `supporters_count` lo escribe la BD en su transacción de apoyos.
+    id: need.id,
+    authorId: need.authorId,
+    supportersCount: need.supportersCount,
+    createdAt: need.createdAt,
+  };
+
+  await maybeVerifySchema();
+  const client = getSupabaseClient();
+  if (client) {
+    const { error } = await withSupabaseRetry('Supabase update help_needs', () =>
+      client.from('help_needs').update(toNeedPatchRow(patch)).eq('id', need.id),
+    );
+    if (error) {
+      respondWriteFailure(res, 'la necesidad', error);
+      return null;
+    }
+  }
+
+  memory.needs = replaceInCache(memory.needs, updated);
+  return { status: 200, body: { need: updated } };
+}
+
+/** Listado público, con paginación `?page=&limit=` opcional (T3/FAL-05). */
+async function listNeeds(input: ApiRequest, res: JsonResponder): Promise<ApiResult> {
+  if (readLimiter.enforce(input.clientIp, res)) return null;
+
+  const params: PageParams | null = readPageParams(input.query);
+  await maybeVerifySchema();
+  const client = getSupabaseClient();
+
+  if (client) {
+    const { data, error, count } = await withSupabaseRetry<HelpNeedRow[]>('Supabase help_needs', () => {
+      let query = client
+        .from('help_needs')
+        .select('*', params ? { count: 'exact' } : undefined)
+        .order('created_at', { ascending: false });
+      if (params) query = query.range(params.offset, params.offset + params.limit - 1);
+      return query;
+    });
+
+    if (!error && Array.isArray(data) && (params || data.length > 0)) {
+      const needs = data.map(mapNeedRow);
+      // Solo una lectura completa refresca la caché: una página no lo es.
+      if (!params) memory.needs = needs;
+      const body: Record<string, unknown> = params
+        ? { needs, source: 'supabase', ...pageMeta(params, typeof count === 'number' ? count : data.length) }
+        : { needs, source: 'supabase' };
+      return { status: 200, body };
+    }
+  }
+
+  const needs = params ? paginate(memory.needs, params) : memory.needs;
+  const body: Record<string, unknown> = params
+    ? { needs, source: 'memory_cache', ...pageMeta(params, memory.needs.length) }
+    : { needs, source: 'memory_cache' };
+  return { status: 200, body };
+}
+
+export const needsHandler: ApiHandler = async (input, res) => {
+  const method = effectiveMethod(input.method);
+  const id = resolveEntityId(input, 'needs');
+
+  // Ruta con id (`/needs/XYZ`): solo PATCH/DELETE; el resto → 404.
+  if (id) return lifecycle(input, res, method, id);
+
+  if (method === 'GET') return listNeeds(input, res);
 
   if (method === 'POST') {
     if (writeLimiter.enforce(input.clientIp, res)) return null;
@@ -59,13 +191,18 @@ export const needsHandler: ApiHandler = async (input, res) => {
       return { status: 400, body: { error: 'Datos de necesidad inválidos.', details: parsed.errors } };
     }
 
-    const need: HelpNeed = {
+    const need: HelpNeedWithAuthor = {
       ...parsed.value,
       // `randomUUID()` evita las colisiones de `Date.now()` y el prefijo
       // `cali-need-` mantiene la compatibilidad con los IDs semilla.
       id: parsed.value.id ?? `cali-need-${randomUUID()}`,
-      status: 'activa',
-      supportersCount: 1,
+      // Estado del cuerpo ya validado (`activa|en_proceso|resuelta`) y
+      // recuento en cero: el primer apoyo real lo da la BD (T2).
+      status: parsed.value.status,
+      supportersCount: 0,
+      // La identidad sale SOLO del JWT: cualquier `authorId` del cuerpo se
+      // ignora (decisión 2026-09-28).
+      authorId: user.userId,
       createdAt: new Date().toISOString(),
     };
 

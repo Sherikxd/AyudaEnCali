@@ -14,6 +14,20 @@ export const writeLimiter = createRateLimiter({
   message: 'Demasiadas escrituras, espera un minuto antes de volver a intentar.',
 });
 
+/**
+ * Lecturas públicas (GET de puntos, necesidades y comentarios) — T3/FAL-05.
+ *
+ * Antes solo se limitaban las escrituras, así que el scrapeo de los GET más
+ * usados era gratis. Una sola cuenta compartida por las tres rutas (120/min
+ * por IP): en Vercel cada función sigue teniendo la suya, igual que el resto
+ * de límites en memoria por despliegue.
+ */
+export const readLimiter = createRateLimiter({
+  windowMs: 60_000,
+  max: 120,
+  message: 'Demasiadas consultas seguidas. Espera un minuto antes de volver a cargar el listado.',
+});
+
 /** Preguntas al asistente (más restrictivo: cuesta tokens del modelo). */
 export const chatLimiter = createRateLimiter({
   windowMs: 60_000,

@@ -1,5 +1,5 @@
 import type { IncomingHttpHeaders } from 'node:http';
-import { verifyToken } from '@clerk/backend';
+import { createClerkClient, verifyToken } from '@clerk/backend';
 import { errorMessage, logger } from './logger.js';
 import type { JsonResponder } from './http.js';
 
@@ -51,7 +51,7 @@ function getSecretKey(): string | null {
 }
 
 /** Extrae el token de la cabecera `Authorization: Bearer <token>`. */
-function bearerToken(req: AuthRequest): string | null {
+export function bearerToken(req: AuthRequest): string | null {
   const header = req.headers.authorization;
   if (typeof header !== 'string') return null;
   const match = /^Bearer\s+(.+)$/i.exec(header.trim());
@@ -61,6 +61,12 @@ function bearerToken(req: AuthRequest): string | null {
 export interface AuthUser {
   /** ID estable de Clerk (`user_…`). */
   userId: string;
+  /**
+   * Nombre visible **si el propio JWT lo trae** (`name`, `username`,
+   * `first_name`/`last_name`). No hace falta consultar a Clerk en ese caso.
+   * Si no viene, se resuelve con `resolveDisplayName`.
+   */
+  name?: string;
 }
 
 /**
@@ -84,7 +90,9 @@ export async function getAuthenticatedUser(req: AuthRequest): Promise<AuthUser |
   try {
     const payload = await verifyToken(token, { secretKey, clockSkewInMs: CLOCK_SKEW_MS });
     const userId = payload?.sub;
-    return typeof userId === 'string' && userId ? { userId } : null;
+    if (typeof userId !== 'string' || !userId) return null;
+    const name = nameFromClaims(payload);
+    return name ? { userId, name } : { userId };
   } catch (error) {
     // El detalle (p. ej. "nbf en el futuro", firma inválida) ayuda a
     // diagnosticar 401 en despliegues, pero no debe inundar el log.
@@ -97,6 +105,107 @@ export async function getAuthenticatedUser(req: AuthRequest): Promise<AuthUser |
     }
     return null;
   }
+}
+
+/* -------------------------------------------------------------------------- */
+/* Nombre mostrado en comentarios (T1 · FAL-03)                                */
+/* -------------------------------------------------------------------------- */
+
+/** Nombre con el que se firma un comentario cuando el JWT no trae nombre. */
+const FALLBACK_NAME = 'Ciudadano Solidario';
+/** Vigencia de un nombre resuelto desde el perfil de Clerk. */
+const NAME_CACHE_TTL_MS = 5 * 60_000;
+/** Vigencia de un fallo: no se vuelve a consultar Clerk en ese minuto. */
+const NAME_MISS_TTL_MS = 60_000;
+/** Tope de la consulta de perfil: un comentario nunca espera a Clerk. */
+const NAME_FETCH_TIMEOUT_MS = 2_500;
+
+const nameCache = new Map<string, { name: string | null; at: number }>();
+let clerkClient: ReturnType<typeof createClerkClient> | null = null;
+
+function cleanName(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const clean = value.replace(/\s+/g, ' ').trim().slice(0, 80);
+  return clean.length > 0 ? clean : undefined;
+}
+
+/** Nombre que trae el propio token de sesión, si lo trae. */
+function nameFromClaims(payload: unknown): string | undefined {
+  if (typeof payload !== 'object' || payload === null) return undefined;
+  const claims = payload as {
+    name?: unknown;
+    username?: unknown;
+    first_name?: unknown;
+    last_name?: unknown;
+  };
+  const direct = cleanName(claims.name) ?? cleanName(claims.username);
+  if (direct) return direct;
+  const first = cleanName(claims.first_name);
+  const last = cleanName(claims.last_name);
+  if (first && last) return `${first} ${last}`;
+  return first ?? last;
+}
+
+/** Envuelve una promesa con tope de duración (sin dejar timers colgados). */
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`${label}: superó ${ms} ms`)), ms);
+    timer.unref?.();
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error: unknown) => {
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
+}
+
+/** Consulta el perfil de Clerk. `null` si no hay clave o la consulta falla. */
+async function fetchClerkName(userId: string, secretKey: string): Promise<string | null> {
+  try {
+    clerkClient ??= createClerkClient({ secretKey });
+    const profile = await withTimeout(
+      clerkClient.users.getUser(userId),
+      NAME_FETCH_TIMEOUT_MS,
+      'Clerk getUser',
+    );
+    const first = cleanName(profile.firstName);
+    const last = cleanName(profile.lastName);
+    const joined = first && last ? `${first} ${last}` : (first ?? last);
+    return joined ?? cleanName(profile.username) ?? null;
+  } catch (error) {
+    logger.debug('No se pudo consultar el perfil de Clerk para el nombre mostrado:', errorMessage(error));
+    return null;
+  }
+}
+
+/**
+ * Nombre con el que se firma un comentario: **nunca** sale del cuerpo de la
+ * petición (decisión 2026-09-28).
+ *
+ * Cadena de decisión:
+ *
+ *  1. Claims del JWT verificado (`name`, `username`, `first_name`…).
+ *  2. Perfil de Clerk (`users.getUser`) con tope de 2,5 s y **caché** por
+ *     usuario: 5 minutos si resolvió, 1 minuto si falló.
+ *  3. `Ciudadano Solidario`: el comentario se publica aunque Clerk no responda.
+ */
+export async function resolveDisplayName(user: AuthUser): Promise<string> {
+  if (user.name) return user.name;
+
+  const cached = nameCache.get(user.userId);
+  if (cached && Date.now() - cached.at < (cached.name ? NAME_CACHE_TTL_MS : NAME_MISS_TTL_MS)) {
+    return cached.name ?? FALLBACK_NAME;
+  }
+
+  const secretKey = getSecretKey();
+  const name = secretKey ? await fetchClerkName(user.userId, secretKey) : null;
+  nameCache.set(user.userId, { name, at: Date.now() });
+  return name ?? FALLBACK_NAME;
 }
 
 /** Responde el 401 estándar de las rutas que exigen sesión. */

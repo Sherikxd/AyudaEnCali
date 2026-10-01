@@ -1,7 +1,7 @@
 import React, { useState, useMemo } from 'react';
 import { useUser } from '@clerk/clerk-react';
 import { useApp } from '../context/AppContext';
-import { HelpCategory, HelpNeed } from '../types';
+import { HelpCategory, HelpNeed, NeedUrgency } from '../types';
 import { CDN_IMAGES } from '../config/images';
 import { 
   Plus, 
@@ -13,7 +13,12 @@ import {
   AlertTriangle, 
   CheckCircle2, 
   Clock,
-  Sparkles
+  Sparkles,
+  Pencil,
+  Trash2,
+  Archive,
+  ArchiveRestore,
+  RotateCcw,
 } from 'lucide-react';
 
 export const BlogView: React.FC = () => {
@@ -24,16 +29,34 @@ export const BlogView: React.FC = () => {
     setIsReportModalOpen, 
     setReportModalType,
     userProfile,
-    openAuthModal
+    openAuthModal,
+    updateNeed,
+    deleteNeed,
   } = useApp();
 
   // El apoyo exige cuenta: se usa solo para el texto de ayuda («inicia
   // sesión»). La puerta de identidad la pone `supportNeed` en el contexto.
-  const { isSignedIn } = useUser();
+  const { isSignedIn, user } = useUser();
 
-  const [activeFilter, setActiveFilter] = useState<'all' | 'alta' | HelpCategory | 'resuelta'>('all');
+  // Identidad de la sesión de Clerk: con ella se decide quién ve las
+  // acciones de edición (el servidor exige el mismo `sub` en el JWT).
+  const sessionId = user?.id ?? null;
+
+  const [activeFilter, setActiveFilter] = useState<
+    'all' | 'alta' | HelpCategory | 'resuelta' | 'archivada'
+  >('all');
   const [searchQuery, setSearchQuery] = useState('');
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  /** Necesidad en edición y borrador de su formulario. */
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [draft, setDraft] = useState({ title: '', description: '', urgency: 'media', items: '' });
+  /** Necesidad con la eliminación pendiente de confirmación en línea. */
+  const [confirmingDeleteId, setConfirmingDeleteId] = useState<string | null>(null);
+  /** Evita dobles clics sobre las acciones del ciclo de vida. */
+  const [busyId, setBusyId] = useState<string | null>(null);
+
+  const isOwnNeed = (need: HelpNeed): boolean =>
+    !need.pending && sessionId !== null && need.authorId === sessionId;
 
   const filteredNeeds = useMemo(() => {
     return helpNeeds.filter((need) => {
@@ -47,12 +70,93 @@ export const BlogView: React.FC = () => {
 
       if (!matchSearch) return false;
 
-      if (activeFilter === 'all') return need.status !== 'resuelta';
-      if (activeFilter === 'alta') return need.urgency === 'alta' && need.status !== 'resuelta';
+      // Fuente de verdad: el `status` que devuelve el servidor (T10).
+      if (activeFilter === 'all') return need.status !== 'resuelta' && need.status !== 'archivada';
+      if (activeFilter === 'alta') return need.urgency === 'alta' && need.status !== 'resuelta' && need.status !== 'archivada';
       if (activeFilter === 'resuelta') return need.status === 'resuelta';
-      return need.category === activeFilter && need.status !== 'resuelta';
+      if (activeFilter === 'archivada') return need.status === 'archivada';
+      return need.category === activeFilter && need.status !== 'resuelta' && need.status !== 'archivada';
     });
   }, [helpNeeds, activeFilter, searchQuery]);
+
+  const activeCount = useMemo(
+    () => helpNeeds.filter((n) => n.status !== 'resuelta' && n.status !== 'archivada').length,
+    [helpNeeds],
+  );
+
+  const startEdit = (need: HelpNeed) => {
+    setConfirmingDeleteId(null);
+    setEditingId(need.id);
+    setDraft({
+      title: need.title,
+      description: need.description,
+      urgency: need.urgency,
+      items: need.items.join(', '),
+    });
+  };
+
+  const cancelEdit = () => {
+    setEditingId(null);
+  };
+
+  const saveEdit = async (need: HelpNeed) => {
+    if (busyId) return;
+    const title = draft.title.trim();
+    if (title.length < 5) {
+      return; // El servidor exigiría 5 caracteres: no se gasta la llamada.
+    }
+    setBusyId(need.id);
+    try {
+      const ok = await updateNeed(need.id, {
+        title,
+        description: draft.description.trim(),
+        urgency: draft.urgency as NeedUrgency,
+        items: draft.items
+          .split(',')
+          .map((item) => item.trim())
+          .filter((item) => item.length > 0),
+      });
+      if (ok) setEditingId(null);
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  /** Cambia el estado de la necesidad (`resuelta` ⇄ `activa`). */
+  const toggleResolved = async (need: HelpNeed) => {
+    if (busyId) return;
+    setBusyId(need.id);
+    try {
+      await updateNeed(need.id, { status: need.status === 'resuelta' ? 'activa' : 'resuelta' });
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  /** Retira el reporte del tablón sin borrarlo (o lo devuelve). */
+  const toggleArchived = async (need: HelpNeed) => {
+    if (busyId) return;
+    setBusyId(need.id);
+    try {
+      await updateNeed(need.id, { status: need.status === 'archivada' ? 'activa' : 'archivada' });
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const removeNeed = async (need: HelpNeed) => {
+    if (busyId) return;
+    setBusyId(need.id);
+    try {
+      const ok = await deleteNeed(need.id);
+      if (ok) {
+        setConfirmingDeleteId(null);
+        setEditingId((current) => (current === need.id ? null : current));
+      }
+    } finally {
+      setBusyId(null);
+    }
+  };
 
   const handleShare = (need: HelpNeed) => {
     const text = `🚨 Ayuda en Cali: ${need.title} (${need.barrio}). Contacto: ${need.contactPhone}`;
@@ -156,7 +260,7 @@ export const BlogView: React.FC = () => {
                   : 'bg-slate-100 text-slate-600 hover:text-slate-900'
               }`}
             >
-              Activas ({helpNeeds.filter((n) => n.status !== 'resuelta').length})
+              Activas ({activeCount})
             </button>
 
             <button
@@ -213,6 +317,17 @@ export const BlogView: React.FC = () => {
               }`}
             >
               ✓ Resueltas
+            </button>
+
+            <button
+              onClick={() => setActiveFilter('archivada')}
+              className={`px-3.5 py-2 text-xs font-bold rounded-xl transition-colors whitespace-nowrap ${
+                activeFilter === 'archivada'
+                  ? 'bg-slate-700 text-white'
+                  : 'bg-slate-100 text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              🗄 Archivadas
             </button>
           </div>
         </div>
@@ -310,23 +425,103 @@ export const BlogView: React.FC = () => {
                         {need.title}
                       </h2>
 
-                      <p className="mt-2 text-xs md:text-sm text-slate-600 leading-relaxed">
-                        {need.description}
-                      </p>
+                      {editingId === need.id ? (
+                        <form
+                          className="mt-3 space-y-2.5 bg-slate-50 border border-slate-200/80 rounded-2xl p-3"
+                          onSubmit={(e) => {
+                            e.preventDefault();
+                            void saveEdit(need);
+                          }}
+                        >
+                          <label className="block">
+                            <span className="text-[11px] font-bold text-slate-600">Título</span>
+                            <input
+                              type="text"
+                              value={draft.title}
+                              onChange={(e) => setDraft((d) => ({ ...d, title: e.target.value }))}
+                              className="mt-1 w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs text-slate-800 focus:outline-none focus:ring-2 focus:ring-orange-500/20"
+                              required
+                              minLength={5}
+                            />
+                          </label>
 
-                      {/* Required Items Badges */}
-                      {need.items && need.items.length > 0 && (
-                        <div className="mt-3 flex flex-wrap gap-1.5 items-center">
-                          <span className="text-[11px] font-bold text-slate-500 mr-1">Se requiere:</span>
-                          {need.items.map((item, idx) => (
-                            <span
-                              key={idx}
-                              className="text-[11px] font-medium text-slate-800 bg-slate-100 px-2.5 py-1 rounded-lg border border-slate-200/60"
+                          <label className="block">
+                            <span className="text-[11px] font-bold text-slate-600">Descripción</span>
+                            <textarea
+                              value={draft.description}
+                              onChange={(e) => setDraft((d) => ({ ...d, description: e.target.value }))}
+                              rows={3}
+                              className="mt-1 w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs text-slate-800 focus:outline-none focus:ring-2 focus:ring-orange-500/20"
+                            />
+                          </label>
+
+                          <div className="flex flex-wrap gap-2">
+                            <label className="block">
+                              <span className="text-[11px] font-bold text-slate-600">Urgencia</span>
+                              <select
+                                value={draft.urgency}
+                                onChange={(e) =>
+                                  setDraft((d) => ({ ...d, urgency: e.target.value as NeedUrgency }))
+                                }
+                                className="mt-1 block px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs text-slate-800"
+                              >
+                                <option value="alta">Alta</option>
+                                <option value="media">Media</option>
+                                <option value="baja">Baja</option>
+                              </select>
+                            </label>
+
+                            <label className="block flex-1 min-w-[180px]">
+                              <span className="text-[11px] font-bold text-slate-600">
+                                Ítems (separados por coma)
+                              </span>
+                              <input
+                                type="text"
+                                value={draft.items}
+                                onChange={(e) => setDraft((d) => ({ ...d, items: e.target.value }))}
+                                className="mt-1 w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs text-slate-800"
+                              />
+                            </label>
+                          </div>
+
+                          <div className="flex items-center gap-2">
+                            <button
+                              type="submit"
+                              disabled={busyId === need.id || draft.title.trim().length < 5}
+                              className="px-3.5 py-1.5 bg-orange-600 hover:bg-orange-700 disabled:bg-slate-300 text-white text-xs font-bold rounded-xl transition-colors"
                             >
-                              {item}
-                            </span>
-                          ))}
-                        </div>
+                              {busyId === need.id ? 'Guardando…' : 'Guardar cambios'}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={cancelEdit}
+                              className="px-3.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold rounded-xl transition-colors"
+                            >
+                              Cancelar
+                            </button>
+                          </div>
+                        </form>
+                      ) : (
+                        <>
+                          <p className="mt-2 text-xs md:text-sm text-slate-600 leading-relaxed">
+                            {need.description}
+                          </p>
+
+                          {/* Required Items Badges */}
+                          {need.items && need.items.length > 0 && (
+                            <div className="mt-3 flex flex-wrap gap-1.5 items-center">
+                              <span className="text-[11px] font-bold text-slate-500 mr-1">Se requiere:</span>
+                              {need.items.map((item, idx) => (
+                                <span
+                                  key={idx}
+                                  className="text-[11px] font-medium text-slate-800 bg-slate-100 px-2.5 py-1 rounded-lg border border-slate-200/60"
+                                >
+                                  {item}
+                                </span>
+                              ))}
+                            </div>
+                          )}
+                        </>
                       )}
                     </div>
 
@@ -404,6 +599,98 @@ export const BlogView: React.FC = () => {
                         </a>
                       </div>
                     </div>
+
+                    {/* Acciones del ciclo de vida: solo para la persona que
+                        publicó (autoría = `sub` del JWT, T10 · FEAT-01). */}
+                    {isOwnNeed(need) && (
+                      <div className="mt-3 pt-3 border-t border-dashed border-slate-200 flex flex-wrap items-center gap-2">
+                        <span className="text-[10px] font-extrabold uppercase tracking-wide text-orange-600 bg-orange-50 border border-orange-100 px-2 py-0.5 rounded-full">
+                          Tu publicación
+                        </span>
+
+                        <button
+                          type="button"
+                          onClick={() => (editingId === need.id ? cancelEdit() : startEdit(need))}
+                          disabled={busyId === need.id}
+                          className="inline-flex items-center gap-1.5 text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 px-2.5 py-1.5 rounded-xl transition-colors disabled:opacity-50"
+                        >
+                          <Pencil className="w-3.5 h-3.5" />
+                          <span>{editingId === need.id ? 'Cerrar edición' : 'Editar'}</span>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => void toggleResolved(need)}
+                          disabled={busyId === need.id}
+                          className="inline-flex items-center gap-1.5 text-xs font-semibold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 px-2.5 py-1.5 rounded-xl transition-colors disabled:opacity-50"
+                        >
+                          {need.status === 'resuelta' ? (
+                            <>
+                              <RotateCcw className="w-3.5 h-3.5" />
+                              <span>Reabrir</span>
+                            </>
+                          ) : (
+                            <>
+                              <CheckCircle2 className="w-3.5 h-3.5" />
+                              <span>Marcar resuelta</span>
+                            </>
+                          )}
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => void toggleArchived(need)}
+                          disabled={busyId === need.id}
+                          className="inline-flex items-center gap-1.5 text-xs font-semibold text-slate-600 bg-slate-100 hover:bg-slate-200 px-2.5 py-1.5 rounded-xl transition-colors disabled:opacity-50"
+                        >
+                          {need.status === 'archivada' ? (
+                            <>
+                              <ArchiveRestore className="w-3.5 h-3.5" />
+                              <span>Restaurar</span>
+                            </>
+                          ) : (
+                            <>
+                              <Archive className="w-3.5 h-3.5" />
+                              <span>Archivar</span>
+                            </>
+                          )}
+                        </button>
+
+                        {confirmingDeleteId === need.id ? (
+                          <span className="inline-flex items-center gap-2 text-xs">
+                            <span className="text-rose-700 font-semibold">¿Eliminar definitivamente?</span>
+                            <button
+                              type="button"
+                              onClick={() => void removeNeed(need)}
+                              disabled={busyId === need.id}
+                              className="px-2.5 py-1.5 bg-rose-600 hover:bg-rose-700 disabled:bg-rose-300 text-white text-xs font-bold rounded-xl transition-colors"
+                            >
+                              Sí, eliminar
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setConfirmingDeleteId(null)}
+                              className="px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold rounded-xl transition-colors"
+                            >
+                              No
+                            </button>
+                          </span>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setEditingId(null);
+                              setConfirmingDeleteId(need.id);
+                            }}
+                            disabled={busyId === need.id}
+                            className="inline-flex items-center gap-1.5 text-xs font-semibold text-rose-600 bg-rose-50 hover:bg-rose-100 px-2.5 py-1.5 rounded-xl transition-colors disabled:opacity-50"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                            <span>Eliminar</span>
+                          </button>
+                        )}
+                      </div>
+                    )}
                   </div>
                 </article>
               );

@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { useApp } from '../context/AppContext';
+import { useApp, useMapUI } from '../context/AppContext';
 import { ChatMessage, HelpPoint } from '../types';
 import { sendChatMessage } from '../services/geminiService';
 import { logger } from '../utils/logger';
@@ -29,12 +29,14 @@ export const ChatView: React.FC = () => {
     helpNeeds, 
     userLocation, 
     setIsLocationModalOpen,
-    focusPointOnMap,
     setIsReportModalOpen,
     setReportModalType,
     userProfile,
     openAuthModal,
+    notify,
   } = useApp();
+  // «Ver en el mapa»: acción del contexto de mapa (T12).
+  const { focusPointOnMap } = useMapUI();
 
   const [messages, setMessages] = useState<ChatMessage[]>([
     {
@@ -76,7 +78,6 @@ export const ChatView: React.FC = () => {
       const reply = await sendChatMessage({
         message: text,
         userLocation,
-        activePoints: helpPoints,
         conversationHistory: [...messages, userMsg],
       });
 
@@ -102,6 +103,9 @@ export const ChatView: React.FC = () => {
       setMessages((prev) => [...prev, assistantMsg]);
     } catch (error) {
       logger.error('No se pudo consultar al asistente:', error);
+      // Sin respuesta del servidor NO se inventa texto (T14): se avisa y se
+      // sugiere mirar el mapa, que sí tiene los datos locales.
+      notify('El asistente no está disponible en este momento. Puedes consultar los puntos directamente en el mapa.', 'error');
       setMessages((prev) => [
         ...prev,
         {
@@ -215,7 +219,13 @@ export const ChatView: React.FC = () => {
         </div>
 
         {/* Conversation Stream */}
-        <div className="flex-1 overflow-y-auto p-4 md:p-6 space-y-5">
+        <div
+          className="flex-1 overflow-y-auto p-4 md:p-6 space-y-5"
+          role="log"
+          aria-live="polite"
+          aria-relevant="additions text"
+          aria-label="Conversación con el asistente CaliSolidaria"
+        >
           {messages.map((msg) => {
             const isUser = msg.sender === 'user';
             return (
@@ -364,6 +374,7 @@ export const ChatView: React.FC = () => {
             <input
               type="text"
               placeholder="Pregunta sobre albergues, veterinarias o acopio según tu ubicación..."
+              aria-label="Escribe tu pregunta para el asistente"
               value={inputMessage}
               onChange={(e) => setInputMessage(e.target.value)}
               disabled={isLoading}
@@ -373,6 +384,8 @@ export const ChatView: React.FC = () => {
             <button
               type="submit"
               disabled={!inputMessage.trim() || isLoading}
+              aria-label="Enviar mensaje al asistente"
+              title="Enviar mensaje"
               className="p-3 bg-orange-600 hover:bg-orange-700 disabled:bg-slate-200 text-white rounded-2xl transition-all shadow-md shadow-orange-600/20 disabled:shadow-none flex items-center justify-center shrink-0 active:scale-95"
             >
               <Send className="w-4 h-4" />

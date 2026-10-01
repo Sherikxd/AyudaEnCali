@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { useApp } from '../context/AppContext';
+import { useModalDialog } from '../hooks/useModalDialog';
 import { CALI_BARRIOS_DATA as BARRIOS } from '../data/caliLocations';
 import {
   MapPin,
@@ -30,6 +31,10 @@ export const LocationModal: React.FC<LocationModalProps> = ({ isOpen, onClose })
   const [filterQuery, setFilterQuery] = useState('');
   const [selectedZone, setSelectedZone] = useState<string>('all');
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
+
+  // Diálogo accesible (T13): Escape cierra, el foco queda atrapado dentro y
+  // vuelve al botón que lo abrió.
+  const dialogRef = useModalDialog<HTMLDivElement>(isOpen, onClose);
 
   if (!isOpen) return null;
 
@@ -107,7 +112,14 @@ export const LocationModal: React.FC<LocationModalProps> = ({ isOpen, onClose })
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-slate-900/60 backdrop-blur-xs overflow-y-auto">
+    <div
+      ref={dialogRef}
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="location-modal-title"
+      tabIndex={-1}
+      className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-slate-900/60 backdrop-blur-xs overflow-y-auto focus:outline-none"
+    >
       <div className="bg-white w-full max-w-lg rounded-3xl shadow-2xl border border-slate-100 overflow-hidden my-auto animate-in fade-in zoom-in-95 duration-200">
         {/* Header */}
         <div className="p-5 pb-4 border-b border-slate-100 flex items-start justify-between gap-3">
@@ -116,7 +128,7 @@ export const LocationModal: React.FC<LocationModalProps> = ({ isOpen, onClose })
               <Navigation className="w-5 h-5" />
             </div>
             <div>
-              <h2 className="text-base font-extrabold text-slate-900 leading-tight">
+              <h2 id="location-modal-title" className="text-base font-extrabold text-slate-900 leading-tight">
                 Registrar y Ajustar Mi Ubicación
               </h2>
               <p className="text-xs text-slate-500 mt-0.5">

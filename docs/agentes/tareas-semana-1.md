@@ -324,3 +324,5 @@ por eso en local nunca falló).
 200 de puntos/necesidades/comentarios). Detalle en
 `memoria/16-imports-esm-vercel.md`. **Pendiente:** commit+push y verificar
 el deploy + `SMOKE_BASE_URL=https://ayuda-en-cali.vercel.app npm run smoke:vercel`.
+
+➡️ Semana 2 (auditoría FAL/FEAT): ver [`tareas-semana-2.md`](tareas-semana-2.md).

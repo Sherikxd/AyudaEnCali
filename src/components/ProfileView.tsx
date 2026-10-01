@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { useApp } from '../context/AppContext';
+import { useApp, useMapUI } from '../context/AppContext';
 import { CALI_BARRIOS, CALI_EMERGENCY_NUMBERS } from '../data/initialData';
 import { UserRole } from '../types';
 import { 
@@ -23,7 +23,6 @@ export const ProfileView: React.FC = () => {
     userProfile, 
     updateUserProfile, 
     helpPoints, 
-    focusPointOnMap, 
     toggleSavePoint,
     setIsReportModalOpen,
     setReportModalType,
@@ -35,6 +34,8 @@ export const ProfileView: React.FC = () => {
     openFaq,
     cookieConsent,
   } = useApp();
+  // «Ver en el mapa»: acción del contexto de mapa (T12).
+  const { focusPointOnMap } = useMapUI();
 
   const consentLabel =
     cookieConsent === 'all'

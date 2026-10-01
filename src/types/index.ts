@@ -4,7 +4,14 @@ export type PointStatus = 'abierto' | 'alta_demanda' | 'cerrado';
 
 export type NeedUrgency = 'alta' | 'media' | 'baja';
 
-export type NeedStatus = 'activa' | 'en_proceso' | 'resuelta';
+/**
+ * Ciclo de vida de una necesidad (FEAT-01).
+ *
+ * `archivada` retira el reporte del tablón **sin borrarlo** (a diferencia de
+ * `resuelta`, que sí se muestra en su pestaña). El servidor la admite en
+ * `PATCH /api/needs/:id` (`server/validation.ts`, `NEED_STATUSES`).
+ */
+export type NeedStatus = 'activa' | 'en_proceso' | 'resuelta' | 'archivada';
 
 export type UserRole = 'ciudadano' | 'voluntario' | 'coordinador';
 
@@ -55,6 +62,58 @@ export interface HelpNeed extends PendingLocal {
   supportersCount: number;
   createdAt: string;
   imageUrl?: string;
+  /**
+   * `sub` del JWT de quien la publicó. **Solo lo rellena el servidor**
+   * (decisión 2026-09-28): el cliente lo usa únicamente para mostrar las
+   * acciones de edición a quien publicó; `undefined` = autor heredado
+   * desconocido (nadie puede editarla por API).
+   */
+  authorId?: string;
+}
+
+/** Campos que acepta `PATCH /api/needs/:id` (el servidor los valida). */
+export type NeedPatch = Partial<
+  Pick<
+    HelpNeed,
+    | 'title'
+    | 'description'
+    | 'category'
+    | 'urgency'
+    | 'barrio'
+    | 'contactName'
+    | 'contactPhone'
+    | 'items'
+    | 'status'
+    | 'imageUrl'
+  >
+>;
+
+/** Campos que acepta `PUT /api/points/:id` (el servidor los valida). */
+export type PointPatch = Partial<
+  Pick<
+    HelpPoint,
+    | 'name'
+    | 'category'
+    | 'lat'
+    | 'lng'
+    | 'address'
+    | 'barrio'
+    | 'comuna'
+    | 'phone'
+    | 'whatsapp'
+    | 'contactPerson'
+    | 'description'
+    | 'schedule'
+    | 'status'
+    | 'urgentItems'
+    | 'capacity'
+  >
+>;
+
+/** Respuesta de `DELETE /api/needs/:id` y `DELETE /api/points/:id`. */
+export interface DeleteResponse {
+  success: boolean;
+  id: string;
 }
 
 export interface UserProfile {
@@ -166,7 +225,12 @@ export interface MySupportsResponse {
 
 export interface ChatResponse {
   reply: string;
-  source?: 'gemini';
+  /**
+   * Quién redactó la respuesta: `local` cuando la sirvió el directorio del
+   * servidor (T5, sin `GEMINI_API_KEY` o con el modelo caído). El cliente
+   * muestra ese texto tal cual y **nunca** inventa uno propio (T14).
+   */
+  source?: 'gemini' | 'local';
 }
 
 export interface ConfigResponse {

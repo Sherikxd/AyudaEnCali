@@ -7,14 +7,15 @@
  * instancia por módulo), igual que cualquier otro estado en memoria.
  */
 import { INITIAL_COMMENTS, INITIAL_HELP_NEEDS, INITIAL_HELP_POINTS } from './seedData.js';
-import type { HelpNeed, HelpPoint, PointComment } from '../src/types/index.js';
+import type { HelpNeedWithAuthor } from './entities.js';
+import type { HelpPoint, PointComment } from '../src/types/index.js';
 
 /** Tope de elementos que se mantienen en memoria como caché de respaldo. */
 const MAX_CACHED_ITEMS = 500;
 
 export const memory: {
   points: HelpPoint[];
-  needs: HelpNeed[];
+  needs: HelpNeedWithAuthor[];
   comments: PointComment[];
 } = {
   points: [...INITIAL_HELP_POINTS],
@@ -47,4 +48,21 @@ export function allSupporters(): IterableIterator<[string, Set<string>]> {
 
 export function pushInCache<T>(list: T[], item: T): T[] {
   return [item, ...list].slice(0, MAX_CACHED_ITEMS);
+}
+
+/**
+ * Sustituye el elemento con el mismo `id` tras una edición (T2) y lo añade
+ * al principio si no estaba (la caché puede estar desactualizada).
+ */
+export function replaceInCache<T extends { id: string }>(list: T[], item: T): T[] {
+  const index = list.findIndex((entry) => entry.id === item.id);
+  if (index === -1) return pushInCache(list, item);
+  const next = [...list];
+  next[index] = item;
+  return next;
+}
+
+/** Retira de la caché el elemento borrado (T2). */
+export function removeFromCache<T extends { id: string }>(list: T[], id: string): T[] {
+  return list.filter((entry) => entry.id !== id);
 }

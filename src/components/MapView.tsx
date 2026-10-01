@@ -3,8 +3,9 @@ import L from 'leaflet';
 // El CSS de Leaflet viaja con este chunk: antes venía de un CDN en el <head>
 // y bloqueaba el render de TODAS las pestañas, incluso sin mapa.
 import 'leaflet/dist/leaflet.css';
-import { useApp } from '../context/AppContext';
-import { HelpCategory } from '../types';
+import { useUser } from '@clerk/clerk-react';
+import { useApp, useMapUI } from '../context/AppContext';
+import { HelpCategory, HelpPoint, PointStatus } from '../types';
 import { MapDashboardSummary } from './MapDashboardSummary';
 import { escapeHtml } from '../utils/sanitize';
 import { 
@@ -21,7 +22,10 @@ import {
   Layers, 
   Loader2, 
   Compass, 
-  SlidersHorizontal 
+  SlidersHorizontal,
+  CheckCircle2,
+  Pencil,
+  Trash2,
 } from 'lucide-react';
 
 type MapLayerType = 'streets' | 'light' | 'satellite';
@@ -50,7 +54,7 @@ const MAP_LAYERS: Record<MapLayerType, { name: string; url: string; subdomains?:
 // 🏠 Casas para albergues
 // 🏥 Hospitales para emergencias médicas
 // 🚚 Camiones para donde están recogiendo ayuda
-const createMarkerIcon = (category: HelpCategory, isSelected: boolean = false) => {
+const createMarkerIcon = (category: HelpCategory, isSelected: boolean = false, verified: boolean = false) => {
   const configs = {
     acopio: {
       bg: 'bg-blue-600',
@@ -115,6 +119,13 @@ const createMarkerIcon = (category: HelpCategory, isSelected: boolean = false) =
       <div class="w-10 h-10 rounded-2xl ${c.bg} ${c.border} ${c.shadow} flex items-center justify-center transition-all duration-200">
         ${c.svg}
       </div>
+      ${
+        verified
+          ? `<span class="absolute -top-2 -right-2 flex items-center justify-center w-4 h-4 rounded-full bg-emerald-500 border-2 border-white shadow-md" title="Punto verificado">
+               <svg xmlns="http://www.w3.org/2000/svg" class="w-2.5 h-2.5 text-white" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>
+             </span>`
+          : ''
+      }
       <div class="absolute -bottom-1 left-1/2 -translate-x-1/2 w-2 h-2 ${c.bg} rotate-45"></div>
     </div>
   `;
@@ -127,6 +138,79 @@ const createMarkerIcon = (category: HelpCategory, isSelected: boolean = false) =
     popupAnchor: [0, -42],
   });
 };
+
+/* ------------------------------------------------------------------ *
+ * Agrupación de marcadores (T16 · FEAT-11)
+ *
+ * Sin dependencia nueva (`leaflet.markercluster` no está en `package.json`
+ * y este área no lo gestiona): agrupamiento manual por celda, con el mismo
+ * efecto visual. Por encima de `CLUSTER_MAX_ZOOM` todo se pinta suelto, y
+ * pulsar un cúmulo acerca el mapa hasta que se reparta en individuales.
+ * ------------------------------------------------------------------ */
+
+/** Zoom a partir del cual los puntos se pintan uno a uno. */
+const CLUSTER_MAX_ZOOM = 13;
+/** Tamaño (en grados) de la celda de agrupación al zoom 10. */
+const CLUSTER_CELL_DEG_AT_10 = 0.02;
+
+interface PointGroup {
+  points: HelpPoint[];
+}
+
+/**
+ * Reparte los puntos en celdas de cuadrícula según el zoom. Los cúmulos de
+ * un solo punto se devuelven igual (el render los pinta como marcador normal),
+ * así que a partir de `CLUSTER_MAX_ZOOM` el comportamiento es el de siempre.
+ * El punto seleccionado se excluye para que nunca quede escondido dentro de
+ * un cúmulo.
+ *
+ * Exportada para poder verificarla sin navegador (T16).
+ */
+export const groupPointsForZoom = (
+  points: readonly HelpPoint[],
+  zoom: number,
+  selectedId: string | undefined,
+): PointGroup[] => {
+  const toGroup = selectedId ? points.filter((point) => point.id !== selectedId) : points;
+
+  if (zoom > CLUSTER_MAX_ZOOM) {
+    return toGroup.map((point) => ({ points: [point] }));
+  }
+
+  // Cada zoom mitad la celda: menos zoom, cúmulos más grandes.
+  const cell = Math.min(CLUSTER_CELL_DEG_AT_10 * 2 ** (10 - zoom), 1);
+  const cells = new Map<string, PointGroup>();
+
+  for (const point of toGroup) {
+    const key = `${Math.floor(point.lat / cell)}:${Math.floor(point.lng / cell)}`;
+    const existing = cells.get(key);
+    if (existing) existing.points.push(point);
+    else cells.set(key, { points: [point] });
+  }
+
+  return [...cells.values()];
+};
+
+/** Punto medio de un cúmulo (dónde se ancla su icono). */
+const groupCenter = (group: PointGroup): [number, number] => {
+  const total = group.points.length;
+  const lat = group.points.reduce((sum, point) => sum + point.lat, 0) / total;
+  const lng = group.points.reduce((sum, point) => sum + point.lng, 0) / total;
+  return [lat, lng];
+};
+
+/** Icono circular con el nº de puntos del cúmulo. */
+const createClusterIcon = (count: number) =>
+  L.divIcon({
+    className: 'custom-cali-cluster',
+    html: `
+      <div class="flex items-center justify-center w-11 h-11 rounded-full bg-slate-900/85 text-white border-2 border-white shadow-lg shadow-slate-900/30">
+        <span class="text-xs font-extrabold tabular-nums">${count}</span>
+      </div>
+    `,
+    iconSize: [44, 44],
+    iconAnchor: [22, 22],
+  });
 
 const userLocationIcon = L.divIcon({
   className: 'user-location-pin',
@@ -145,10 +229,6 @@ const userLocationIcon = L.divIcon({
 export const MapView: React.FC = () => {
   const {
     helpPoints,
-    selectedPoint,
-    setSelectedPoint,
-    mapCenter,
-    mapZoom,
     userLocation,
     requestUserLocation,
     isLocatingUser,
@@ -157,14 +237,29 @@ export const MapView: React.FC = () => {
     calculateDistance,
     setIsReportModalOpen,
     setReportModalType,
-    setInitialCoordsForNewPoint,
     toggleSavePoint,
     userProfile,
     pointComments,
     addPointComment,
     openAuthModal,
     setActiveTab,
+    updatePoint,
+    deletePoint,
   } = useApp();
+  // Vista del mapa (T12): contexto aparte para que seleccionar un punto
+  // no re-renderice el tablón, el chat ni la cabecera.
+  const {
+    selectedPoint,
+    setSelectedPoint,
+    mapCenter,
+    mapZoom,
+    setInitialCoordsForNewPoint,
+  } = useMapUI();
+
+  // Identidad de la sesión de Clerk: gobierna qué puntos muestran las
+  // acciones de edición (el servidor exige ese mismo `sub` en el JWT, T10).
+  const { user } = useUser();
+  const sessionId = user?.id ?? null;
 
   const mapContainerRef = useRef<HTMLDivElement>(null);
   const mapInstanceRef = useRef<L.Map | null>(null);
@@ -176,10 +271,86 @@ export const MapView: React.FC = () => {
   const [showListViewDesktop, setShowListViewDesktop] = useState(true);
   const [currentLayer, setCurrentLayer] = useState<MapLayerType>('streets');
   const [showLayerMenu, setShowLayerMenu] = useState(false);
+  // Zoom real del mapa: gobierna la agrupación de marcadores (T16). Se
+  // actualiza en `zoomend` para repintar los cúmulos al acercar/alejar.
+  const [mapZoomLevel, setMapZoomLevel] = useState<number>(mapZoom);
 
   // Selected point comment input
   const [commentInput, setCommentInput] = useState('');
   const [isPostingComment, setIsPostingComment] = useState(false);
+
+  // Ciclo de vida del punto propio (T10 · FEAT-01): edición en línea dentro
+  // de la ficha y borrado con confirmación visible.
+  const [isEditingPoint, setIsEditingPoint] = useState(false);
+  const [confirmingDeletePoint, setConfirmingDeletePoint] = useState(false);
+  const [lifecycleBusy, setLifecycleBusy] = useState(false);
+  const [pointDraft, setPointDraft] = useState({
+    name: '',
+    address: '',
+    schedule: '',
+    description: '',
+    status: 'abierto' as PointStatus,
+    urgentItems: '',
+  });
+
+  // La ficha cambia de punto: se descartan edición y confirmación pendientes.
+  useEffect(() => {
+    setIsEditingPoint(false);
+    setConfirmingDeletePoint(false);
+  }, [selectedPoint?.id]);
+
+  /** Solo la persona que publicó el punto ve las acciones de ciclo de vida. */
+  const isOwnPoint =
+    selectedPoint !== null && !selectedPoint.pending && sessionId !== null && selectedPoint.authorId === sessionId;
+
+  const startPointEdit = (point: HelpPoint) => {
+    setPointDraft({
+      name: point.name,
+      address: point.address,
+      schedule: point.schedule,
+      description: point.description,
+      status: point.status,
+      urgentItems: point.urgentItems.join(', '),
+    });
+    setConfirmingDeletePoint(false);
+    setIsEditingPoint(true);
+  };
+
+  const savePointEdit = async () => {
+    if (!selectedPoint || lifecycleBusy) return;
+    const name = pointDraft.name.trim();
+    const address = pointDraft.address.trim();
+    if (name.length < 3 || address.length < 3) return; // El servidor rechazaría estos mínimos.
+
+    setLifecycleBusy(true);
+    try {
+      const ok = await updatePoint(selectedPoint.id, {
+        name,
+        address,
+        schedule: pointDraft.schedule.trim(),
+        description: pointDraft.description.trim(),
+        status: pointDraft.status,
+        urgentItems: pointDraft.urgentItems
+          .split(',')
+          .map((item) => item.trim())
+          .filter((item) => item.length > 0),
+      });
+      if (ok) setIsEditingPoint(false);
+    } finally {
+      setLifecycleBusy(false);
+    }
+  };
+
+  const removeSelectedPoint = async () => {
+    if (!selectedPoint || lifecycleBusy) return;
+    setLifecycleBusy(true);
+    try {
+      const ok = await deletePoint(selectedPoint.id);
+      if (ok) setConfirmingDeletePoint(false);
+    } finally {
+      setLifecycleBusy(false);
+    }
+  };
 
   // Filtered points
   const filteredPoints = useMemo(() => {
@@ -223,6 +394,11 @@ export const MapView: React.FC = () => {
       // Markers layer group
       const markersLayer = L.layerGroup().addTo(map);
       markersLayerRef.current = markersLayer;
+
+      // El zoom manda para agrupar (T16): al terminar cada animación de
+      // zoom se repintan los cúmulos.
+      setMapZoomLevel(map.getZoom());
+      map.on('zoomend', () => setMapZoomLevel(map.getZoom()));
 
       // Handle map click to report a new point directly
       map.on('click', (e: L.LeafletMouseEvent) => {
@@ -333,12 +509,63 @@ export const MapView: React.FC = () => {
       markersLayerRef.current.addLayer(userMarker);
     }
 
-    // Render Help Points
-    filteredPoints.forEach((point) => {
-      const isSelected = selectedPoint?.id === point.id;
+    // Render Help Points: agrupados en cúmulos cuando el zoom es bajo y uno
+    // a uno por encima de `CLUSTER_MAX_ZOOM` (T16). El punto seleccionado
+    // nunca va dentro de un cúmulo.
+    const selectedInList =
+      selectedPoint && filteredPoints.some((point) => point.id === selectedPoint.id)
+        ? selectedPoint
+        : undefined;
+
+    const groups = groupPointsForZoom(filteredPoints, mapZoomLevel, selectedInList?.id);
+
+    // El seleccionado queda fuera de los cúmulos (o de la lista, si está
+    // filtrado): se pinta siempre suelto y en primer plano.
+    if (selectedInList) {
+      const selectedMarker = L.marker([selectedInList.lat, selectedInList.lng], {
+        icon: createMarkerIcon(selectedInList.category, true, selectedInList.verified),
+        zIndexOffset: 500,
+        title: selectedInList.name,
+        alt: selectedInList.verified
+          ? `${selectedInList.name} (punto verificado)`
+          : selectedInList.name,
+      });
+      selectedMarker.on('click', () => setSelectedPoint(selectedInList));
+      markersLayerRef.current?.addLayer(selectedMarker);
+    }
+
+    groups.forEach((group) => {
+      const [lat, lng] = groupCenter(group);
+
+      // Cúmulo: nº de puntos y acercada al hacer clic.
+      if (group.points.length > 1) {
+        const cluster = L.marker([lat, lng], {
+          icon: createClusterIcon(group.points.length),
+          zIndexOffset: 200,
+          title: `${group.points.length} puntos de ayuda en esta zona (acércate para verlos)`,
+          alt: `${group.points.length} puntos de ayuda agrupados en esta zona`,
+        });
+
+        cluster.on('click', () => {
+          const map = mapInstanceRef.current;
+          if (!map) return;
+          // Se salta el umbral de agrupación para que el cúmulo se reparta.
+          map.flyTo([lat, lng], Math.max(map.getZoom() + 2, CLUSTER_MAX_ZOOM + 1), {
+            duration: 0.5,
+          });
+        });
+
+        markersLayerRef.current?.addLayer(cluster);
+        return;
+      }
+
+      const point = group.points[0];
+      const isSelected = selectedInList?.id === point.id;
       const marker = L.marker([point.lat, point.lng], {
-        icon: createMarkerIcon(point.category, isSelected),
+        icon: createMarkerIcon(point.category, isSelected, point.verified),
         zIndexOffset: isSelected ? 500 : 100,
+        title: point.name,
+        alt: point.verified ? `${point.name} (punto verificado)` : point.name,
       });
 
       marker.on('click', () => {
@@ -347,7 +574,7 @@ export const MapView: React.FC = () => {
 
       markersLayerRef.current?.addLayer(marker);
     });
-  }, [filteredPoints, selectedPoint, userLocation]);
+  }, [filteredPoints, selectedPoint, userLocation, mapZoomLevel]);
 
   // Fly to map center when center/zoom changes
   useEffect(() => {
@@ -661,6 +888,12 @@ export const MapView: React.FC = () => {
             <span className="w-3 h-3 rounded-full bg-rose-600"></span>
             <span>🏥 Salud</span>
           </div>
+          <div className="flex items-center gap-1.5">
+            <span className="flex items-center justify-center w-3.5 h-3.5 rounded-full bg-emerald-500 text-white">
+              <CheckCircle2 className="w-2.5 h-2.5" aria-hidden="true" />
+            </span>
+            <span>Verificado</span>
+          </div>
           <span className="text-slate-400">|</span>
           <span className="text-[11px] text-slate-500">Haz clic en el mapa para reportar un punto</span>
         </div>
@@ -748,21 +981,29 @@ export const MapView: React.FC = () => {
                         </div>
                       </div>
 
-                      <span
-                        className={`text-[10px] font-bold px-2 py-0.5 rounded-full shrink-0 ${
-                          point.status === 'abierto'
-                            ? 'bg-emerald-50 text-emerald-700'
+                      <div className="flex flex-col items-end gap-1 shrink-0">
+                        {point.verified && (
+                          <span className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">
+                            <CheckCircle2 className="w-3 h-3" aria-hidden="true" />
+                            Verificado
+                          </span>
+                        )}
+                        <span
+                          className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
+                            point.status === 'abierto'
+                              ? 'bg-emerald-50 text-emerald-700'
+                              : point.status === 'alta_demanda'
+                              ? 'bg-amber-50 text-amber-700'
+                              : 'bg-slate-100 text-slate-600'
+                          }`}
+                        >
+                          {point.status === 'abierto'
+                            ? 'Abierto'
                             : point.status === 'alta_demanda'
-                            ? 'bg-amber-50 text-amber-700'
-                            : 'bg-slate-100 text-slate-600'
-                        }`}
-                      >
-                        {point.status === 'abierto'
-                          ? 'Abierto'
-                          : point.status === 'alta_demanda'
-                          ? 'Alta demanda'
-                          : 'Cerrado'}
-                      </span>
+                            ? 'Alta demanda'
+                            : 'Cerrado'}
+                        </span>
+                      </div>
                     </div>
 
                     <p className="text-xs text-slate-600 mt-2 line-clamp-2 leading-relaxed">
@@ -823,10 +1064,16 @@ export const MapView: React.FC = () => {
                 </div>
 
                 <div>
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-2 flex-wrap">
                     <span className="text-[10px] uppercase tracking-wider font-extrabold text-orange-600">
                       {categoryLabels[selectedPoint.category]}
                     </span>
+                    {selectedPoint.verified && (
+                      <span className="inline-flex items-center gap-1 text-[10px] font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 px-1.5 py-0.5 rounded-full">
+                        <CheckCircle2 className="w-3 h-3" aria-hidden="true" />
+                        Verificado
+                      </span>
+                    )}
                     <span aria-hidden="true" className="text-slate-300">·</span>
                     <span className="text-xs text-slate-500 font-medium">
                       {selectedPoint.barrio} ({selectedPoint.comuna})
@@ -924,6 +1171,167 @@ export const MapView: React.FC = () => {
                 <span>Ruta GPS</span>
               </a>
             </div>
+
+            {/* Acciones del ciclo de vida: solo para quien publicó el punto
+                (autoría = `sub` del JWT, T10 · FEAT-01). */}
+            {isOwnPoint && (
+              <div className="mt-4 pt-3.5 border-t border-dashed border-slate-200">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-[10px] font-extrabold uppercase tracking-wide text-orange-600 bg-orange-50 border border-orange-100 px-2 py-0.5 rounded-full">
+                    Tu punto
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => (isEditingPoint ? setIsEditingPoint(false) : startPointEdit(selectedPoint))}
+                    disabled={lifecycleBusy}
+                    className="inline-flex items-center gap-1.5 text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 px-2.5 py-1.5 rounded-xl transition-colors disabled:opacity-50"
+                  >
+                    <Pencil className="w-3.5 h-3.5" />
+                    <span>{isEditingPoint ? 'Cerrar edición' : 'Editar'}</span>
+                  </button>
+
+                  {confirmingDeletePoint ? (
+                    <span className="inline-flex items-center gap-2 text-xs">
+                      <span className="text-rose-700 font-semibold">¿Eliminar el punto?</span>
+                      <button
+                        type="button"
+                        onClick={() => void removeSelectedPoint()}
+                        disabled={lifecycleBusy}
+                        className="px-2.5 py-1.5 bg-rose-600 hover:bg-rose-700 disabled:bg-rose-300 text-white text-xs font-bold rounded-xl transition-colors"
+                      >
+                        Sí, eliminar
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setConfirmingDeletePoint(false)}
+                        className="px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold rounded-xl transition-colors"
+                      >
+                        No
+                      </button>
+                    </span>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsEditingPoint(false);
+                        setConfirmingDeletePoint(true);
+                      }}
+                      disabled={lifecycleBusy}
+                      className="inline-flex items-center gap-1.5 text-xs font-semibold text-rose-600 bg-rose-50 hover:bg-rose-100 px-2.5 py-1.5 rounded-xl transition-colors disabled:opacity-50"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                      <span>Eliminar</span>
+                    </button>
+                  )}
+                </div>
+
+                {isEditingPoint && (
+                  <form
+                    className="mt-3 space-y-2.5 bg-slate-50 border border-slate-200/80 rounded-2xl p-3"
+                    onSubmit={(e) => {
+                      e.preventDefault();
+                      void savePointEdit();
+                    }}
+                  >
+                    <label className="block">
+                      <span className="text-[11px] font-bold text-slate-600">Nombre</span>
+                      <input
+                        type="text"
+                        value={pointDraft.name}
+                        onChange={(e) => setPointDraft((d) => ({ ...d, name: e.target.value }))}
+                        className="mt-1 w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs text-slate-800 focus:outline-none focus:ring-2 focus:ring-orange-500/20"
+                        required
+                        minLength={3}
+                      />
+                    </label>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                      <label className="block">
+                        <span className="text-[11px] font-bold text-slate-600">Dirección</span>
+                        <input
+                          type="text"
+                          value={pointDraft.address}
+                          onChange={(e) => setPointDraft((d) => ({ ...d, address: e.target.value }))}
+                          className="mt-1 w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs text-slate-800"
+                          required
+                          minLength={3}
+                        />
+                      </label>
+
+                      <label className="block">
+                        <span className="text-[11px] font-bold text-slate-600">Horario</span>
+                        <input
+                          type="text"
+                          value={pointDraft.schedule}
+                          onChange={(e) => setPointDraft((d) => ({ ...d, schedule: e.target.value }))}
+                          className="mt-1 w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs text-slate-800"
+                        />
+                      </label>
+                    </div>
+
+                    <label className="block">
+                      <span className="text-[11px] font-bold text-slate-600">Descripción</span>
+                      <textarea
+                        value={pointDraft.description}
+                        onChange={(e) => setPointDraft((d) => ({ ...d, description: e.target.value }))}
+                        rows={3}
+                        className="mt-1 w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs text-slate-800"
+                      />
+                    </label>
+
+                    <div className="flex flex-wrap gap-2">
+                      <label className="block">
+                        <span className="text-[11px] font-bold text-slate-600">Estado</span>
+                        <select
+                          value={pointDraft.status}
+                          onChange={(e) =>
+                            setPointDraft((d) => ({ ...d, status: e.target.value as PointStatus }))
+                          }
+                          className="mt-1 block px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs text-slate-800"
+                        >
+                          <option value="abierto">Abierto</option>
+                          <option value="alta_demanda">Alta demanda</option>
+                          <option value="cerrado">Cerrado</option>
+                        </select>
+                      </label>
+
+                      <label className="block flex-1 min-w-[180px]">
+                        <span className="text-[11px] font-bold text-slate-600">
+                          Artículos urgentes (separados por coma)
+                        </span>
+                        <input
+                          type="text"
+                          value={pointDraft.urgentItems}
+                          onChange={(e) => setPointDraft((d) => ({ ...d, urgentItems: e.target.value }))}
+                          className="mt-1 w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs text-slate-800"
+                        />
+                      </label>
+                    </div>
+
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="submit"
+                        disabled={
+                          lifecycleBusy ||
+                          pointDraft.name.trim().length < 3 ||
+                          pointDraft.address.trim().length < 3
+                        }
+                        className="px-3.5 py-1.5 bg-orange-600 hover:bg-orange-700 disabled:bg-slate-300 text-white text-xs font-bold rounded-xl transition-colors"
+                      >
+                        {lifecycleBusy ? 'Guardando…' : 'Guardar cambios'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setIsEditingPoint(false)}
+                        className="px-3.5 py-1.5 bg-white hover:bg-slate-100 text-slate-700 text-xs font-bold rounded-xl border border-slate-200 transition-colors"
+                      >
+                        Cancelar
+                      </button>
+                    </div>
+                  </form>
+                )}
+              </div>
+            )}
 
             {/* Community Comments & Live Updates Section (Registered Users only) */}
             <div className="mt-4 pt-3.5 border-t border-slate-100">

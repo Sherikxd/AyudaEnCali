@@ -20,7 +20,9 @@ import {
   normalizeRole,
   normalizeUrgency,
 } from './validation.js';
-import type { HelpNeed, HelpPoint, PointComment } from '../src/types/index.js';
+import type { NeedPatch, PointPatch } from './validation.js';
+import type { HelpNeedWithAuthor } from './entities.js';
+import type { HelpPoint, PointComment } from '../src/types/index.js';
 
 /* -------------------------------------------------------------------------- */
 /* Estado compartido (lo lee GET /api/config)                                  */
@@ -104,7 +106,9 @@ export interface SupabaseLikeError {
 
 /**
  * Traduce un error de PostgREST / red a una categoría usable.
- * - `missing`: no existen las tablas del esquema (PGRST205).
+ * - `missing`: no existen las tablas del esquema (PGRST205) o **falta una
+ *   columna** de ellas (PGRST204, p. ej. `help_needs.author_id` tras un
+ *   despliegue con la BD por detrás): en ambos casos toca aplicar el DDL.
  * - `auth`: clave inválida o permisos insuficientes.
  * - `transient`: red, timeout o sobrecarga puntual (reintentable).
  */
@@ -112,7 +116,13 @@ export function classifySupabaseError(error: SupabaseLikeError): SupabaseErrorKi
   const code = error.code ?? '';
   const message = error.message ?? '';
 
-  if (code === 'PGRST205' || /could not find the (table|function)/i.test(message)) return 'missing';
+  if (
+    code === 'PGRST205' ||
+    code === 'PGRST204' ||
+    /could not find the (table|function|column)/i.test(message)
+  ) {
+    return 'missing';
+  }
   if (
     code === 'PGRST301' ||
     /invalid api key|api key not found|jwt (is )?(invalid|expired)|not authorized|permission denied|401 unauthorized|403/i.test(
@@ -142,9 +152,9 @@ function sqlEditorUrl(host: string | null): string {
 function missingTablesHint(host: string | null): string {
   const where = sqlEditorUrl(host);
   if (process.env.SUPABASE_ACCESS_TOKEN) {
-    return `Faltan tablas del esquema (help_points, help_needs, need_supporters o point_comments). El servidor intentará crearlas solo; si no puede, pega supabase/schema.sql en ${where}.`;
+    return `Faltan tablas o columnas del esquema (help_points, help_needs, need_supporters o point_comments). El servidor intentará crearlas solo; si no puede, pega supabase/schema.sql en ${where}.`;
   }
-  return `Faltan tablas del esquema (help_points, help_needs, need_supporters o point_comments). Ejecuta el esquema en ${where} (o descárgalo con GET /api/supabase/sql).`;
+  return `Faltan tablas o columnas del esquema (help_points, help_needs, need_supporters o point_comments). Ejecuta el esquema en ${where} (o descárgalo con GET /api/supabase/sql, que exige Authorization: Bearer <SQL_ADMIN_TOKEN>).`;
 }
 
 const AUTH_HINT = 'Claves de Supabase rechazadas: revisa SUPABASE_SERVICE_ROLE_KEY / SUPABASE_ANON_KEY en .env.';
@@ -201,6 +211,11 @@ const MAX_ATTEMPTS = 2;
 export interface SupabaseResult<T> {
   data: T | null;
   error: SupabaseLikeError | null;
+  /**
+   * Recuento exacto cuando la consulta lo pidió (`count: 'exact'`): lo usa
+   * la paginación de los listados (T3). `undefined` si no se pidió.
+   */
+  count?: number | null;
 }
 
 /**
@@ -238,6 +253,9 @@ let inflight: Promise<void> | null = null;
 const SCHEMA_PROBES: ReadonlyArray<readonly [table: string, column: string]> = [
   ['help_points', 'id'],
   ['help_needs', 'id'],
+  // Autoría de las necesidades (T1): si la BD no tiene la columna, el sondeo
+  // la detecta y se reaplica el DDL antes de escribir en ella.
+  ['help_needs', 'author_id'],
   ['need_supporters', 'need_id'],
   ['point_comments', 'id'],
 ];
@@ -327,7 +345,7 @@ async function verify(): Promise<void> {
     status.tablesReady = false;
     status.hint =
       applied && !applied.ok
-        ? `Faltan tablas del esquema (help_points, help_needs, need_supporters o point_comments) y no se pudieron crear (${applied.message}). Pega supabase/schema.sql en ${sqlEditorUrl(status.host)}.`
+        ? `Faltan tablas o columnas del esquema (help_points, help_needs, need_supporters o point_comments) y no se pudieron crear (${applied.message}). Pega supabase/schema.sql en ${sqlEditorUrl(status.host)}.`
         : missingTablesHint(status.host);
     logOnce('missing', `Supabase: ${status.hint}`);
     return;
@@ -426,6 +444,8 @@ export interface HelpNeedRow {
   status?: string | null;
   supporters_count?: number | null;
   image_url?: string | null;
+  /** `sub` del JWT del autor; `NULL` en los registros heredados (T1). */
+  author_id?: string | null;
   created_at?: string;
 }
 
@@ -459,7 +479,7 @@ export function mapPointRow(row: HelpPointRow): HelpPoint {
   };
 }
 
-export function mapNeedRow(row: HelpNeedRow): HelpNeed {
+export function mapNeedRow(row: HelpNeedRow): HelpNeedWithAuthor {
   return {
     id: String(row.id ?? ''),
     title: String(row.title ?? ''),
@@ -473,6 +493,8 @@ export function mapNeedRow(row: HelpNeedRow): HelpNeed {
     status: normalizeNeedStatus(row.status),
     supportersCount: Number(row.supporters_count ?? 0),
     imageUrl: row.image_url ? String(row.image_url) : undefined,
+    // `NULL` = heredado sin autor conocido: nadie podrá editar esa fila.
+    authorId: row.author_id ? String(row.author_id) : undefined,
     createdAt: row.created_at ?? new Date().toISOString(),
   };
 }
@@ -502,7 +524,7 @@ export function toPointRow(point: HelpPoint): HelpPointRow {
   };
 }
 
-export function toNeedRow(need: HelpNeed): HelpNeedRow {
+export function toNeedRow(need: HelpNeedWithAuthor): HelpNeedRow {
   return {
     id: need.id,
     title: need.title,
@@ -516,8 +538,53 @@ export function toNeedRow(need: HelpNeed): HelpNeedRow {
     status: need.status,
     supporters_count: need.supportersCount,
     image_url: need.imageUrl,
+    // Escrito SOLO por el servidor desde el JWT verificado (nunca del body).
+    author_id: need.authorId ?? null,
     created_at: need.createdAt,
   };
+}
+
+/**
+ * Solo las columnas que el `PATCH /api/needs/:id` toca de verdad.
+ *
+ * Se actualiza por columnas (no con la fila completa) para no pisar valores
+ * que otra persona puede haber cambiado a la vez, p. ej.
+ * `supporters_count` al mismo tiempo que se edita el título.
+ */
+export function toNeedPatchRow(patch: NeedPatch): HelpNeedRow {
+  const row: HelpNeedRow = {};
+  if (patch.title !== undefined) row.title = patch.title;
+  if (patch.description !== undefined) row.description = patch.description;
+  if (patch.category !== undefined) row.category = patch.category;
+  if (patch.urgency !== undefined) row.urgency = patch.urgency;
+  if (patch.barrio !== undefined) row.barrio = patch.barrio;
+  if (patch.contactName !== undefined) row.contact_name = patch.contactName;
+  if (patch.contactPhone !== undefined) row.contact_phone = patch.contactPhone;
+  if (patch.items !== undefined) row.items = patch.items;
+  if (patch.status !== undefined) row.status = patch.status;
+  if (patch.imageUrl !== undefined) row.image_url = patch.imageUrl;
+  return row;
+}
+
+/** Columnas que el `PUT /api/points/:id` toca de verdad (misma regla). */
+export function toPointPatchRow(patch: PointPatch): HelpPointRow {
+  const row: HelpPointRow = {};
+  if (patch.name !== undefined) row.name = patch.name;
+  if (patch.category !== undefined) row.category = patch.category;
+  if (patch.lat !== undefined) row.lat = patch.lat;
+  if (patch.lng !== undefined) row.lng = patch.lng;
+  if (patch.address !== undefined) row.address = patch.address;
+  if (patch.barrio !== undefined) row.barrio = patch.barrio;
+  if (patch.comuna !== undefined) row.comuna = patch.comuna;
+  if (patch.phone !== undefined) row.phone = patch.phone;
+  if (patch.whatsapp !== undefined) row.whatsapp = patch.whatsapp;
+  if (patch.contactPerson !== undefined) row.contact_person = patch.contactPerson;
+  if (patch.description !== undefined) row.description = patch.description;
+  if (patch.schedule !== undefined) row.schedule = patch.schedule;
+  if (patch.status !== undefined) row.status = patch.status;
+  if (patch.urgentItems !== undefined) row.urgent_items = patch.urgentItems;
+  if (patch.capacity !== undefined) row.capacity = patch.capacity;
+  return row;
 }
 
 export interface PointCommentRow {

@@ -49,11 +49,12 @@
 
     <!--
       Tipografías de terceros: sin <link> bloqueante en el head. Se inyectan
-      desde `src/utils/thirdPartyFonts.ts` de forma asíncrona y solo si la
-      persona aceptó las cookies opcionales (banner de consentimiento).
+      desde `src/utils/consent.ts` (`applyConsent`) de forma asíncrona y solo
+      si la persona aceptó las cookies opcionales (banner de consentimiento);
+      sin aceptar, la app usa la pila de fuentes del sistema. Por eso aquí no
+      hay conexiones anticipadas a dominios de terceros ni hoja de estilos
+      propia de ellas.
     -->
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   </head>
   <body class="bg-white text-slate-900 font-sans antialiased selection:bg-orange-500 selection:text-white">
     <div id="root"></div>

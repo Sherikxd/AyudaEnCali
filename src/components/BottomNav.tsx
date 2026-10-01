@@ -30,6 +30,7 @@ export const BottomNav: React.FC = () => {
         {/* Tab 1: Mapa */}
         <button
           onClick={() => setActiveTab('map')}
+          aria-current={activeTab === 'map' ? 'page' : undefined}
           className={`flex flex-col items-center justify-center min-h-[44px] min-w-[44px] py-1 transition-colors ${
             activeTab === 'map' ? 'text-orange-600 font-bold' : 'text-slate-500 hover:text-slate-800'
           }`}
@@ -41,6 +42,7 @@ export const BottomNav: React.FC = () => {
         {/* Tab 2: Tablón */}
         <button
           onClick={() => setActiveTab('blog')}
+          aria-current={activeTab === 'blog' ? 'page' : undefined}
           className={`flex flex-col items-center justify-center min-h-[44px] min-w-[44px] py-1 transition-colors ${
             activeTab === 'blog' ? 'text-orange-600 font-bold' : 'text-slate-500 hover:text-slate-800'
           }`}
@@ -63,6 +65,7 @@ export const BottomNav: React.FC = () => {
         {/* Tab 4: Asistente IA */}
         <button
           onClick={() => setActiveTab('chat')}
+          aria-current={activeTab === 'chat' ? 'page' : undefined}
           className={`flex flex-col items-center justify-center min-h-[44px] min-w-[44px] py-1 transition-colors relative ${
             activeTab === 'chat' ? 'text-orange-600 font-bold' : 'text-slate-500 hover:text-slate-800'
           }`}
@@ -75,6 +78,7 @@ export const BottomNav: React.FC = () => {
         {/* Tab 5: Perfil */}
         <button
           onClick={() => setActiveTab('profile')}
+          aria-current={activeTab === 'profile' ? 'page' : undefined}
           className={`flex flex-col items-center justify-center min-h-[44px] min-w-[44px] py-1 transition-colors ${
             activeTab === 'profile' ? 'text-orange-600 font-bold' : 'text-slate-500 hover:text-slate-800'
           }`}

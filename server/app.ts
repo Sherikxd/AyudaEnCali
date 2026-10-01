@@ -37,8 +37,12 @@ const app = express();
 
 app.disable('x-powered-by');
 // Detrás de un proxy (Cloud Run / Vercel / Nginx) se necesita para conocer la
-// IP real del cliente, que es la clave del limitador de tasa. Las plataformas
-// declaran `NODE_ENV=production`, así que aquí se activa solo.
+// IP real del cliente, que es la clave del limitador de tasa. Con `1` Express
+// confía en **un solo salto**: `req.ip` devuelve la dirección que vio el
+// proxy más próximo (la última de `X-Forwarded-For`), inalterable por quien
+// hace la petición. Las plataformas declaran `NODE_ENV=production`, así que
+// aquí se activa solo; en desarrollo `req.ip` es el socket y una cabecera
+// `X-Forwarded-For` mandada a mano no cambia la clave (FAL-06).
 if (isProduction) app.set('trust proxy', 1);
 
 app.use(securityHeaders);
@@ -95,6 +99,13 @@ mount(api, '/supabase/sql', sqlHandler);
 mount(api, '/points', pointsHandler);
 mount(api, '/needs', needsHandler);
 mount(api, '/needs/:id/support', needsSupportHandler);
+// Ciclo de vida (T2): `PATCH/DELETE /needs/:id` y `PUT/DELETE /points/:id`.
+// Se registran tras la ruta más específica (`/needs/:id/support`) y el
+// núcleo responde 404 con el mismo cuerpo para los métodos que no gestiona
+// (p. ej. `GET /needs/:id`), de modo que la respuesta no cambia respecto a
+// antes de montarlas. En Vercel llegan por los rewrites de `vercel.json`.
+mount(api, '/needs/:id', needsHandler);
+mount(api, '/points/:id', pointsHandler);
 mount(api, '/support/mine', supportMineHandler);
 
 /* ------------------------ Comentarios / asistente ------------------------- */

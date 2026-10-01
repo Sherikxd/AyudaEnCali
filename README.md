@@ -43,8 +43,9 @@ puntos de salud, y para publicar lo que el barrio necesita.
   (`src/utils/seo.ts`), Open Graph y Twitter Card completos con imagen
   1200×630, favicon SVG e icono para pantalla de inicio.
 - **Consentimiento de cookies**: banner con elección persistente
-  (`all` / `essential`) reversible desde el FAQ; las tipografías de terceros
-  solo se cargan si se aceptan.
+  (`all` / `essential`) reversible desde el perfil y desde el FAQ; las
+  tipografías de terceros solo se cargan si se aceptan
+  (`src/utils/consent.ts`).
 - **Imágenes servidas por CDN (Cloudinary)**: héroe, tarjetas del tablón y
   vista previa social salen de `res.cloudinary.com` con `f_auto,q_auto,w_*`;
   las URLs viven en `src/config/images.ts` y la subida es `npm run cdn:upload`
@@ -55,33 +56,53 @@ puntos de salud, y para publicar lo que el barrio necesita.
 | Capa | Tecnologías |
 | --- | --- |
 | Frontend | React 19 + TypeScript, Vite 8, Tailwind CSS 4, Leaflet, lucide-react |
-| Backend | Node.js + Express (`server.ts` con `tsx`; en Vercel, la función `api/index.ts`) |
+| Backend | Node.js + Express (`server.ts` con `tsx`); en Vercel, **una función por ruta** (`api/*.ts`) sobre los núcleos de `server/handlers/` |
 | IA | Google Gemini (`@google/genai`) |
-| Datos | Supabase (PostgreSQL + RLS) con caché en memoria |
-| Auth | Clerk (`@clerk/clerk-react`) |
-| Calidad | `tsc --noEmit` en modo estricto (`npm run lint`) |
+| Datos | Supabase (PostgreSQL + RLS, **4 tablas**) con caché en memoria |
+| Auth | Clerk: `@clerk/clerk-react` en el cliente y `@clerk/backend` para verificar el JWT en el servidor |
+| Despliegue | Node/Docker/Cloud Run (`server.ts`), Vercel Hobby (`vercel.json` + `api/`), CI en GitHub Actions |
+| Calidad | `tsc --noEmit` estricto (`npm run lint`), tests jsdom (`test:ui`), humo (`smoke:vercel`), RLS (`verify:rls`) |
 
 ## Arquitectura
 
 ```
 .
-├── server.ts              # entry local/Docker/Cloud Run: Vite/estático + listen
-├── server/
-│   ├── app.ts             # app Express compartida (API + rutas) · la que usa Vercel
-│   ├── middleware.ts       # headers de seguridad, 404, errores, asyncHandler
-│   ├── rateLimit.ts        # limitador de tasa por IP (en memoria)
+├── server.ts              # entrada local/Docker/Cloud Run: Vite (dev), estáticos,
+│                          #   404 de página, listen y apagado ordenado
+├── server/                # núcleo compartido: Express y Vercel ejecutan lo mismo
+│   ├── app.ts             # app Express: enrutado de /api, cabeceras, 404 y errores
+│   ├── handlers/          # núcleos framework-agnósticos, uno por ruta:
+│   │                      #   health · config · sql · points · needs · needsSupport
+│   │                      #   supportMine · comments · chat
+│   ├── vercel.ts          # createApiRoute(): adaptador de las funciones api/*.ts
+│   ├── http.ts            # ApiRequest/ApiHandler, cabeceras, lectura del cuerpo, IP
+│   ├── middleware.ts       # cabeceras de seguridad, 404 JSON (apiNotFound), errorHandler
+│   ├── limiters.ts        # writeLimiter (60/min) y chatLimiter (15/min) por IP
+│   ├── rateLimit.ts       # limitador de tasa genérico (en memoria)
+│   ├── auth.ts            # verifica el JWT de Clerk (Authorization: Bearer)
 │   ├── validation.ts       # validación/saneamiento de todos los payloads
+│   ├── store.ts           # caché en memoria: puntos, necesidades, comentarios, apoyos
+│   ├── context.ts         # contexto de datos del asistente (TTL 30 s sobre Supabase)
 │   ├── seedData.ts         # datos semilla de Cali (fallback sin BD)
 │   ├── supabase.ts         # cliente Supabase: reintentos, sondeo del esquema, mappers
 │   ├── schemaAdmin.ts      # aplica el esquema con la Management API (opcional)
 │   ├── schema.ts           # lee supabase/schema.sql y lo sirve en /api/supabase/sql
+│   ├── bootstrap.ts        # dotenv + initSupabase(), importado antes que nada
 │   └── logger.ts           # logging con niveles
+├── api/                   # 10 funciones de Vercel (una por ruta; el plan Hobby
+│   │                      #   admite 12)
+│   ├── health.ts · config.ts · sql.ts · points.ts · needs.ts
+│   ├── needs-support.ts · support-mine.ts · comments.ts · chat.ts
+│   └── index.ts           # fallback: 404 JSON para cualquier /api/* sin función propia
 ├── supabase/
-│   └── schema.sql          # DDL idempotente + políticas RLS (fuente única)
+│   └── schema.sql          # DDL idempotente (4 tablas) + políticas RLS (fuente única)
 ├── scripts/
-│   ├── apply-schema.ts     # npm run db:setup → crea las tablas vía Management API
-│   ├── seed-db.ts          # npm run db:seed  → carga los datos iniciales
-│   └── verify-rls.sh       # valida el esquema y las políticas en un PG temporal
+│   ├── apply-schema.ts     # npm run db:setup  → crea las tablas vía Management API
+│   ├── seed-db.ts          # npm run db:seed   → carga los datos iniciales
+│   ├── upload-cloudinary.ts# npm run cdn:upload→ sube public/images/ a Cloudinary
+│   ├── test-authmodal.mjs  # npm run test:ui   → tests del modal en jsdom
+│   ├── smoke-vercel.mjs    # npm run smoke:vercel → humo de api/ y vercel.json
+│   └── verify-rls.sh       # npm run verify:rls  → esquema + RLS en un PG temporal
 ├── src/
 │   ├── components/         # vistas y modales (MapView, BlogView, ChatView…)
 │   │   └── ClerkSync.tsx   # sincroniza la sesión de Clerk con el perfil local
@@ -89,24 +110,29 @@ puntos de salud, y para publicar lo que el barrio necesita.
 │   ├── services/
 │   │   ├── api.ts          # cliente HTTP tipado con timeout y errores uniformes
 │   │   └── geminiService.ts# llamada al asistente con respaldo local
+│   ├── config/             # imágenes de Cloudinary y configuración de Clerk
 │   ├── data/               # datos iniciales y barrios de Cali
 │   ├── types/index.ts      # dominio + contrato de la API (compartido)
-│   └── utils/              # logger, storage seguro, escape de HTML
-├── api/
-│   └── index.ts           # función de Vercel: exporta la app como default
-├── public/images/          # imágenes estáticas (visibles en producción)
+│   └── utils/              # logger, storage, seo, consent (tipografías), sanitize, sync
+├── docs/agentes/           # memoria compartida: decisiones, auditorías, tareas
+├── public/
+│   ├── 404.html            # 404 autocontenida y noindex (estado 404 real)
+│   └── images/             # imágenes estáticas (visibles en producción)
 ├── index.html
 ├── vite.config.ts
 ├── vercel.json             # Vercel: build (Vite → dist), rewrites de /api, caché
+├── .github/workflows/ci.yml# CI: lint → build → test:ui → smoke:vercel (→ verify:rls)
 ├── Dockerfile               # multi-stage: build con Vite + imagen mínima de runtime
 ├── .dockerignore            # sin .env (secretos) ni node_modules dentro de la imagen
 └── tsconfig.json           # strict + noUnusedLocals/Parameters
 ```
 
 **Flujo de datos:** componente → `AppContext` → `src/services/api.ts` →
-`server.ts` → Supabase. Si Supabase falla, el servidor responde desde la
-caché en memoria; si el navegador no puede contactar al servidor, la UI usa
-lo guardado en `localStorage`. En ningún caso la app se queda en blanco.
+el adaptador del entorno (`server/app.ts` en Express, `api/*.ts` +
+`server/vercel.ts` en Vercel) → el núcleo de `server/handlers/` →
+Supabase. Si Supabase falla, el servidor responde desde la caché en
+memoria; si el navegador no puede contactar al servidor, la UI usa lo
+guardado en `localStorage`. En ningún caso la app se queda en blanco.
 
 ## Requisitos
 
@@ -144,10 +170,11 @@ que empiezan con `VITE_`.
 | `SUPABASE_ANON_KEY` | Para BD | Clave pública |
 | `SUPABASE_SERVICE_ROLE_KEY` | Recomendada | Escrituras desde el servidor (nunca en el cliente) |
 | `SUPABASE_ACCESS_TOKEN` | No | Token de gestión: el servidor crea las tablas si faltan (`npm run db:setup`) |
-| `CARTO_API_KEY` | No | Capa base del mapa |
+| `CARTO_API_KEY` | No | Solo la lee el servidor y la expone en `/api/config` como `cartoConfigured` (tarjeta del perfil). Las capas del mapa actual son OpenStreetMap y ArcGIS y no llevan clave |
+| `APP_URL` | No | Hoy solo existe en `.env.example`: el código no la lee |
 | `VITE_CLERK_PUBLISHABLE_KEY` | Para auth | Clave **pública** de Clerk. El servidor la lee en runtime y la sirve en `/api/config` (sin recompilar); si además va como `--build-arg`, queda horneada en el bundle |
 | `CLERK_PUBLISHABLE_KEY` | No | Alias sin prefijo `VITE_` de la misma clave (también aceptado por el servidor) |
-| `CLERK_SECRET_KEY` | Sí (auth) | Clave secreta, **solo servidor**. Verifica las sesiones que exigen cuenta (apoyos). Si falta, el resto de la app funciona pero `/api/support/*` y `POST /api/needs/:id/support` responden `401` |
+| `CLERK_SECRET_KEY` | Sí (auth) | Clave secreta, **solo servidor**. Verifica el JWT de todas las rutas con sesión (escrituras, apoyos y `/api/support/mine`). Si falta, el resto de la app funciona pero esas rutas responden `401` |
 | `CLOUDINARY_URL` | Para CDN | URL de cuenta (`cloudinary://clave:secreto@nube`) que usa **solo** `npm run cdn:upload`. El cliente nunca la ve: conoce el *cloud name* público de `src/config/images.ts` |
 
 > **Aviso sobre `VITE_*`**: esas variables se leen **al compilar** (`vite
@@ -166,12 +193,45 @@ que empiezan con `VITE_`.
 | `npm start` | Sirve `dist/` en modo producción (`NODE_ENV=production`) |
 | `npm run preview` | Vista previa del build con `vite preview` |
 | `npm run lint` | Comprobación de tipos (`tsc --noEmit`, modo estricto) |
+| `npm run typecheck` | Alias exacto de `lint` |
 | `npm run test:ui` | Test interactivo del modal de registro en jsdom (sin navegador) |
-| `npm run verify:rls` | Valida `supabase/schema.sql` y sus políticas RLS en un Postgres desechable |
+| `npm run smoke:vercel` | Humo de las 10 funciones de `api/` y de `vercel.json` (35 checks); con `SMOKE_BASE_URL` va contra un deploy real |
+| `npm run verify:rls` | Valida `supabase/schema.sql` y sus políticas RLS en un Postgres desechable (requiere red) |
 | `npm run db:setup` | Crea/actualiza las tablas de Supabase con la Management API |
 | `npm run db:seed` | Carga los datos iniciales (5 puntos, 3 necesidades); idempotente |
 | `npm run cdn:upload` | Sube `public/images/` a Cloudinary y reescribe las `image_url` de Supabase. Acepta `--dry-run` y `--skip-db` |
 | `npm run clean` | Elimina `dist/` |
+
+## Verificación y CI
+
+Cinco comandos, todos ejecutables sin desplegar nada:
+
+| Comando | Qué comprueba | Notas |
+| --- | --- | --- |
+| `npm run lint` (alias `typecheck`) | `tsc --noEmit` en modo estricto (`noUnusedLocals`/`noUnusedParameters`) | El primero: es el más rápido |
+| `npx vite build` | Que el bundle de producción compila (code splitting y `manualChunks`) | Vercel ejecuta exactamente este build |
+| `npm run test:ui` | El modal de registro montado en jsdom (`scripts/test-authmodal.mjs`) | Usa `node --env-file-if-exists=.env` (Node ≥ 22.9) |
+| `npm run smoke:vercel` | Importa las 10 funciones de `api/`, valida los `rewrites` de `vercel.json` y dispara la matriz de rutas (**35 checks**) | Hermético: fuerza `VERCEL=1` y **no** lee `.env`. Con `SMOKE_BASE_URL=…` prueba un deploy real |
+| `npm run verify:rls` | Aplica `supabase/schema.sql` dos veces en un Postgres desechable y comprueba quién lee, inserta y borra | Requiere red y binarios de PostgreSQL |
+
+**Pipeline** (`.github/workflows/ci.yml`, en cada *push*/*PR* a `main` y
+manualmente con `workflow_dispatch`), en este orden:
+
+1. `npm run lint`
+2. `npx vite build`
+3. `npm run test:ui` (si no hay secreto, con una clave de Clerk de formato válido)
+4. `npm run smoke:vercel`
+5. `npm run verify:rls` → **solo si cambió `supabase/schema.sql`** en ese
+   *push* (y siempre en `workflow_dispatch`), con `continue-on-error: true`
+   porque necesita red y PostgreSQL
+
+Detalles del runner: Node 22, `npm ci || npm install` (el repo no tiene
+`package-lock.json`; el lockfile es `bun.lock`) y `fetch-depth: 0` para
+poder detectar el cambio de `schema.sql`.
+
+> **Por qué existe este gate**: Vercel solo ejecuta `vite build`, así que
+> tipos rotos, tests caídos o un humo roto llegarían a producción igual.
+> Este workflow es la barrera previa.
 
 ## API
 
@@ -182,32 +242,39 @@ formato `{ "error": string, "details"?: string[] }`.
 | --- | --- | --- |
 | `GET` | `/api/health` | Salud del servicio |
 | `GET` | `/api/config` | Estado de integraciones (sin secretos): incluye `supabaseTablesReady` y `supabaseHint` |
-| `GET` | `/api/supabase/sql` | Esquema SQL (contenido de `supabase/schema.sql`) |
+| `GET` | `/api/supabase/sql` | Esquema SQL (contenido de `supabase/schema.sql`). **Pública**: no exige sesión (el DDL es idempotente y no lleva datos ni claves) |
 | `GET` | `/api/points` | Centros de ayuda (Supabase o caché) |
-| `POST` | `/api/points` | Crea un punto (validado, `400` si no pasa) |
+| `POST` | `/api/points` | Crea un punto (**exige sesión**; validado, `400` si no pasa) |
 | `GET` | `/api/needs` | Necesidades publicadas |
-| `POST` | `/api/needs` | Crea una necesidad |
+| `POST` | `/api/needs` | Crea una necesidad (**exige sesión**) |
 | `POST` | `/api/needs/:id/support` | Apoya (`add`) o retira (`remove`) el apoyo. **Exige sesión** (`401`); `400` si `action` no es válida, `404` si no existe. Devuelve `{ success, count, supported }` |
 | `GET` | `/api/support/mine` | IDs de las necesidades que apoyó la cuenta actual. **Exige sesión** (`401`) |
 | `GET` | `/api/comments?pointId=` | Comentarios (de un punto o todos) |
-| `POST` | `/api/comments` | Publica un comentario |
+| `POST` | `/api/comments` | Publica un comentario (**exige sesión**) |
 | `POST` | `/api/chat` | Mensaje al asistente (Gemini o directorio local) |
 
 Límites: **15 req/min** en `/api/chat` y **60 req/min** por IP en las
-escrituras (cabeceras `RateLimit-*`, respuesta `429` al superarlo).
+escrituras (cabeceras `RateLimit-*`, respuesta `429` al superarlo). En
+Vercel esos límites son **por función** (una cuenta por ruta, ver
+[Vercel](#vercel-plan-hobby-gratis)); en Express es una sola cuenta.
 
-**Rutas con sesión:** las marcadas como *exigen sesión* reciben el token de
-Clerk en la cabecera `Authorization: Bearer <token>` (en el cliente,
-`useAuth().getToken()` de `@clerk/clerk-react`). El servidor lo verifica
-contra las claves JWKS de Clerk con `CLERK_SECRET_KEY`; sin esa variable en
-el entorno, esas rutas responden `401` y dejan un aviso en el log. El ID del
+**Rutas con sesión:** las marcadas como *exige sesión* —todas las
+escrituras (`POST /api/points`, `POST /api/needs`,
+`POST /api/needs/:id/support`, `POST /api/comments`) y
+`GET /api/support/mine`— reciben el token de Clerk en la cabecera
+`Authorization: Bearer <token>` (en el cliente, `useAuth().getToken()` de
+`@clerk/clerk-react`). El servidor lo verifica con `verifyToken` de
+`@clerk/backend` usando `CLERK_SECRET_KEY`; sin esa variable en el
+entorno, esas rutas responden `401` y dejan un aviso en el log. El ID del
 usuario nunca lo manda el cliente: sale del claim `sub` del JWT validado.
 
-Ejemplo:
+Ejemplo (las escrituras exigen sesión: sin la cabecera `Authorization`
+responde `401`):
 
 ```bash
 curl -X POST http://localhost:3000/api/points \
   -H 'Content-Type: application/json' \
+  -H 'Authorization: Bearer <token de Clerk>' \
   -d '{"name":"Punto de Acopio Barrio","category":"acopio","lat":3.44,"lng":-76.54,
        "address":"Calle 1 # 2-3","barrio":"San Antonio"}'
 ```
@@ -217,10 +284,12 @@ curl -X POST http://localhost:3000/api/points \
 1. Crea un proyecto en Supabase y copia las credenciales a `.env`
    (`SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`).
 2. Crea el esquema (idempotente: repetirlo **nunca** borra datos) con una de
-   estas dos vías. Crea tres tablas: `help_points`, `help_needs` y
-   `need_supporters` (los apoyos individuales), más sus índices y políticas:
+   estas dos vías. Crea **cuatro tablas**: `help_points` (los centros),
+   `help_needs` (las necesidades), `need_supporters` (los apoyos
+   individuales) y `point_comments` (los comentarios de los puntos), más sus
+   índices, la función `toggle_need_support` y las políticas RLS:
    - **Automática:** define `SUPABASE_ACCESS_TOKEN` en `.env`. El servidor
-     detecta que falta **cualquiera** de las tres (incluida una tabla nueva
+     detecta que falta **cualquiera** de las cuatro (incluida una tabla nueva
      al actualizar la app) y crea/actualiza el esquema solo. Para forzarlo en
      cualquier momento: `npm run db:setup`.
    - **Manual:** pega `supabase/schema.sql` en el **SQL Editor** de Supabase
@@ -240,10 +309,11 @@ curl -X POST http://localhost:3000/api/points \
 | Política | Rol | Alcance |
 | --- | --- | --- |
 | Lectura pública | cualquiera | `SELECT` en `help_points` y `help_needs` |
-| Inserción autenticada | `authenticated` | `INSERT` con `auth.uid() NOT NULL` |
+| Inserción autenticada | `authenticated` | `INSERT` con `auth.uid() NOT NULL` en esas mismas dos tablas |
 | Actualización autenticada | `authenticated` | `UPDATE` en ambas tablas |
-| Eliminación | — | sin política: no se puede borrar vía API |
+| Eliminación | — | sin política en `help_points`/`help_needs`: no se puede borrar vía API |
 | `need_supporters` | — | RLS activo y **sin políticas**: solo el backend (`service_role`) lee o escribe; ni `anon` ni `authenticated` ven quién apoyó qué |
+| `point_comments` | — | RLS activo y **sin políticas**: solo el backend lee y escribe; la identidad del autor sale del JWT de Clerk, nunca del cuerpo de la petición |
 
 El backend escribe con `SUPABASE_SERVICE_ROLE_KEY`, que **bypasea RLS**: las
 operaciones de la app no dependen de las políticas, que funcionan como
@@ -289,7 +359,10 @@ veces y comprueba quién puede leer, insertar y borrar.
   (`server/validation.ts`): tipos, rangos, longitudes y enums permitidos.
 - Limitador de tasa por IP y tamaño máximo de cuerpo JSON (`1mb`).
 - Cabeceras de seguridad (`nosniff`, `X-Frame-Options`, `Referrer-Policy`,
-  `Permissions-Policy` con geolocalización propia) y `x-powered-by` deshabilitado.
+  `Permissions-Policy` con geolocalización propia) y `x-powered-by`
+  deshabilitado, en **todas las respuestas de la API** (Express las pone en
+  `server/app.ts`, Vercel en `server/vercel.ts`; los estáticos del CDN de
+  Vercel no las llevan, ver los detalles desplegados abajo).
 - Escape de HTML en los popups de Leaflet que muestran texto externo.
 - Errores de API sin stack traces; logs detallados solo en el servidor.
 
@@ -339,8 +412,9 @@ veces y comprueba quién puede leer, insertar y borrar.
 - Caché por tipo de archivo: `/assets/*` **inmutable por 1 año** (los nombres
   llevan hash), imágenes una semana y el HTML nunca cacheado.
 - Leaflet y sus estilos viajan con el chunk del mapa (antes un `<link>` a un
-  CDN bloqueaba el render de *todas* las pestañas); las tipografías de terceros
-  se inyectan desde JS, fuera del `<head>` crítico.
+  CDN bloqueaba el render de *todas* las pestañas); las tipografías de
+  terceros se inyectan desde JS en `src/utils/consent.ts`, fuera del
+  `<head>` crítico y solo si se aceptaron las cookies opcionales.
 - `manualChunks` para React y Clerk: desplegar no invalida la caché de los
   vendors, y las vistas siguen cargándose con `React.lazy` por pestaña.
 - Imágenes comprimidas con `ffmpeg` (≈2,9 MB → ≈0,6 MB en `public/`) y tarjetas
@@ -362,6 +436,13 @@ veces y comprueba quién puede leer, insertar y borrar.
   vive en `localStorage` y se puede cambiar desde el perfil o el FAQ.
 
 ## Despliegue
+
+| Dónde | Entrada | Cómo |
+| --- | --- | --- |
+| Local (desarrollo) | `npm run dev` | `server.ts` con Vite en modo middleware: API + cliente en `http://localhost:3000` |
+| Node (producción) | `npm run build` → `npm start` | El mismo `server.ts` sirve la API y `dist/` en un único proceso |
+| Docker / Cloud Run | `Dockerfile` (multi-stage) | `node --import tsx server.ts` como PID 1, `HEALTHCHECK` contra `/api/health` |
+| Vercel (plan Hobby) | `api/*.ts` (10 funciones) + CDN de `dist/` | `server.ts` **no** se ejecuta: `vercel.json` reescribe cada ruta a su función |
 
 ```bash
 npm run build   # genera dist/
@@ -437,16 +518,18 @@ Pasos:
 
    ```bash
    npm run smoke:vercel                 # humo hermético en local (35 checks)
-   SMOKE_BASE_URL=https://<app>.vercel.app npm run smoke:vercel   # contra un deploy real
+   SMOKE_BASE_URL=https://<app>.vercel.app npm run smoke:vercel   # cualquier deploy
+   SMOKE_BASE_URL=https://ayuda-en-cali.vercel.app npm run smoke:vercel   # producción
    ```
 
    El script fuerza `VERCEL=1` por defecto (sin leer `.env`); pasa
    `SMOKE_WITH_ENV=1` si quieres el humo local con tus variables reales.
 
-> **Gate antes de desplegar**: `.github/workflows/ci.yml` ejecuta en cada
-> push/PR `npm run lint` → `npx vite build` → `npm run test:ui` →
+> **Gate antes de desplegar**: el pipeline de
+> [Verificación y CI](#verificación-y-ci) ejecuta en cada push/PR
+> `npm run lint` → `npx vite build` → `npm run test:ui` →
 > `npm run smoke:vercel` (y `npm run verify:rls` solo si cambió
-> `supabase/schema.sql`). Vercel solo corre `vite build`, así que este
+> `supabase/schema.sql`). Vercel solo corre `vite build`, así que ese
 > workflow es lo que impide subir a producción con tipos o tests rotos.
 
 Variables de entorno en Vercel (panel, *Environment Variables*):
@@ -462,7 +545,7 @@ Variables de entorno en Vercel (panel, *Environment Variables*):
 | `SUPABASE_ACCESS_TOKEN` | – | Opcional | Management API: el servidor crea las tablas si faltan |
 | `GEMINI_API_KEY` | – | ✅ | Habilita al asistente; sin ella usa el directorio local |
 | `GEMINI_MODEL` | – | Opcional | Modelo a usar (`gemini-3.8-flash` por defecto) |
-| `CARTO_API_KEY` | – | Opcional | Capa base del mapa |
+| `CARTO_API_KEY` | – | Opcional | Solo la expone `/api/config` como `cartoConfigured`; las capas del mapa no la usan |
 | `APP_URL` | – | Opcional | Hoy solo está en `.env.example`; el código no la lee |
 
 **No hace falta** `PORT` (la función no escucha), `NODE_ENV` (Vercel pone
@@ -503,6 +586,10 @@ Detalles del despliegue:
 - **Los estáticos los sirve el CDN** desde `dist/` (`express.static` se
   ignora en Vercel): las cabeceras de `/assets` y de imágenes las pone
   `vercel.json`, con la misma caché que antes.
+- **Cabeceras de seguridad solo en `/api/*`**: las respuestas de la API las
+  llevan (las aplica `server/vercel.ts`), pero los estáticos del CDN hoy
+  solo llevan `Cache-Control`: `vercel.json` no define `nosniff`,
+  `X-Frame-Options`, `Referrer-Policy` ni `Permissions-Policy`.
 - **404**: `public/404.html` se copia a `dist/404.html` con `vite build` y
   Vercel lo sirve con estado **404** cuando la ruta no coincide con ningún
   fichero (misma regla que GitHub Pages). No hay *rewrite* de SPA a propósito:
@@ -517,6 +604,14 @@ Detalles del despliegue:
   canónica y, si no, devuelve **404 JSON** (`server/handlers/supportMine.ts`
   y `needsSupport.ts`, con el flag `req.rewritten` que marca
   `server/vercel.ts`). El cliente solo usa las rutas canónicas de la tabla.
+- **Imports ESM con `.js` explícito**: en `api/` y `server/` todo import
+  relativo con valor lleva la extensión resolutiva (p. ej.
+  `'../server/handlers/chat.js'`). El build de `@vercel/node` emite los
+  `.ts` como `.js` ESM (`"type": "module"`) y **no reescribe** los
+  especificadores: sin la extensión, cada función revienta en
+  `ERR_MODULE_NOT_FOUND` al cargar (`FUNCTION_INVOCATION_FAILED`).
+  TypeScript la resuelve igual en el typecheck, `tsx` en local y Vite no
+  toca `server/**`.
 
 ### Docker
 
@@ -541,6 +636,8 @@ docker run --rm --env-file .env ayudaencali node --import tsx scripts/seed-db.ts
 
 Detalles del contenedor:
 
+- **Base `node:24-slim`** en las dos etapas: `build` (Vite → `dist/`) y
+  `runtime` (dependencias de producción + `tsx`, que es runtime real).
 - **Sin secretos horneados**: `.dockerignore` excluye `.env`; solo se inyecta
   la clave pública de Clerk (que además es pública por definición).
 - **Un único proceso como PID 1** (`node --import tsx`, no `npm start`), así
@@ -553,4 +650,14 @@ Detalles del contenedor:
 
 ## Enlaces
 
-- Producción: https://ayudaencali.lat
+- **Deploy de Vercel** (producción real, plan Hobby):
+  https://ayuda-en-cali.vercel.app
+- **Dominio propio**: https://ayudaencali.lat → redirige (308) a
+  `https://www.ayudaencali.lat`, que sirve **el mismo proyecto de Vercel**
+  (misma respuesta que el `*.vercel.app`, comprobado con `/` y `/api/health`).
+- **Humo pendiente contra producción** (cierra el ciclo
+  CI → deploy → humo, ver [Verificación y CI](#verificación-y-ci)):
+
+  ```bash
+  SMOKE_BASE_URL=https://ayuda-en-cali.vercel.app npm run smoke:vercel
+  ```

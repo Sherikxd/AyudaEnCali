@@ -7,7 +7,10 @@
  *     (si algún módulo no compila o arrastra algo raro, aquí revienta).
  *  2. **Estáticos de `vercel.json`**: orden de los rewrites (específicos
  *     antes del catch-all), `_orig` en cada destino, id explícito en el
- *     rewrite de apoyos y ≤ 12 funciones (límite del plan Hobby).
+ *     rewrite de apoyos y ≤ 12 funciones (límite del plan Hobby). Si existen
+ *     los rewrites de ciclo de vida (`/api/needs/:id`, `/api/points/:id`,
+ *     T2) también se comprueba que entreguen el id por ruta canónica **y**
+ *     por `?id=`.
  *  3. **Rutas**: levanta un servidor local que emula el enrutado de Vercel
  *     (filesystem primero y luego los `rewrites` del `vercel.json` real,
  *     expandiendo `:id`/`:path*` como hace `@vercel/routing-utils`) y
@@ -15,9 +18,15 @@
  *       · método correcto → 200/401, método incorrecto → **404 JSON**
  *       · JSON malformado → **400** (mismo cuerpo que Express)
  *       · `?id=` del rewrite entregado → 401 (404 si el id se perdiera)
- *       · espejos filesystem (`/api/support-mine`, `/api/needs-support?id=`)
- *         → **404** como Express
+ *       · espejos filesystem (`/api/support-mine`, `/api/needs-support?id=`,
+ *         `/api/sql`) → **404** como Express
  *       · `api/index` → 404 JSON **con la ruta original**
+ *       · `/api/supabase/sql` → **401 sin token** y 200 con
+ *         `Authorization: Bearer <SQL_ADMIN_TOKEN>` (T3)
+ *       · GET paginados → `?page=999` devuelve página vacía con metadatos y
+ *         cabeceras `RateLimit-*`; sin `page` la respuesta sigue intacta (T3)
+ *       · `PATCH /needs/:id` y `DELETE /points/:id` → 401 con sesión ausente
+ *         cuando el rewrite existe, o el 404 histórico si aún no está (T2)
  *  4. **`request.body` que lanza** (comportamiento documentado de Vercel ante
  *     JSON malformado): llama directamente al handler con un getter que
  *     lanza y espera el **400** (P1 de la T12), y con otro error cualquiera
@@ -42,6 +51,11 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 // Hermético por defecto: sin `.env` no hay BD ni claves → respaldos en memoria.
 if (!process.env.SMOKE_WITH_ENV) process.env.VERCEL ??= '1';
+
+// Token local para el caso de éxito de `/api/supabase/sql` (T3): el handler
+// lo lee en cada petición, así que basta con definirlo aquí. En los casos sin
+// token se borra para comprobar el 401 real.
+process.env.SQL_ADMIN_TOKEN ??= 'token-smoke-local';
 
 /* -------------------------------------------------------------------------- */
 /* 1) Importar cada api/*.ts                                                   */
@@ -95,6 +109,26 @@ estatico(
     String(needsRewrite.destination).includes('_orig=needs/:id/support') &&
     String(needsRewrite.destination).includes('id=:id'),
   'el rewrite de apoyos entrega el id por ruta canónica Y por `?id=`',
+);
+// T2: si agente-calidad ya añadió los rewrites de ciclo de vida, tienen que
+// cumplir el mismo contrato (y estar antes del catch-all). Si aún no, el
+// check pasa sin exigirlos: la comprobación de ruta de más abajo cambia en
+// consecuencia (404 histórico en lugar de 401).
+const needsIdRewrite = rewrites.find((r) => r.source === '/api/needs/:id');
+const pointsIdRewrite = rewrites.find((r) => r.source === '/api/points/:id');
+estatico(
+  !needsIdRewrite ||
+    (String(needsIdRewrite.destination).includes('_orig=needs/:id') &&
+      String(needsIdRewrite.destination).includes('id=:id') &&
+      rewrites.indexOf(needsIdRewrite) < catchAll),
+  'el rewrite de /api/needs/:id (si existe) entrega el id por ruta canónica Y por `?id=`',
+);
+estatico(
+  !pointsIdRewrite ||
+    (String(pointsIdRewrite.destination).includes('_orig=points/:id') &&
+      String(pointsIdRewrite.destination).includes('id=:id') &&
+      rewrites.indexOf(pointsIdRewrite) < catchAll),
+  'el rewrite de /api/points/:id (si existe) entrega el id por ruta canónica Y por `?id=`',
 );
 estatico(apiFiles.length <= 12, `${apiFiles.length} funciones ≤ 12 del plan Hobby`);
 
@@ -244,14 +278,84 @@ const esDeploy = BASE !== localBase;
 const JSON_INVALIDO = 'JSON inválido en el cuerpo de la petición.';
 const SIN_SESION_APOYO = 'Debes iniciar sesión para apoyar una necesidad.';
 
+/**
+ * ¿Los rewrites de ciclo de vida (T2) están ya en `vercel.json`?
+ *
+ * Si sí, `PATCH /needs/:id` y `DELETE /points/:id` llegan a los núcleos y
+ * responden **401** sin sesión; si no, caen en el catch-all y responden el
+ * **404** histórico. La comprobación cambia con la configuración real para
+ * que la suite esté verde en cualquiera de los dos estados.
+ */
+const routedNeedsId = resolveTarget('/api/needs/XYZ')?.handler === handlers.get('/api/needs');
+const routedPointsId = resolveTarget('/api/points/XYZ')?.handler === handlers.get('/api/points');
+
+/**
+ * Caso de ciclo de vida adaptado al estado del `vercel.json`.
+ *
+ * Con `SMOKE_BASE_URL` manda el `vercel.json` **del despliegue**, que puede
+ * ser distinto del local: ahí se aceptan los dos resultados posibles.
+ */
+function casoCiclo(id, method, path, json, routed) {
+  if (esDeploy) return { id, method, path, json, statusAny: [401, 404] };
+  if (routed) return { id, method, path, json, status: 401, includes: ['Debes iniciar sesión'] };
+  return {
+    id,
+    method,
+    path,
+    json,
+    status: 404,
+    exactBody: { error: `Ruta no encontrada: ${method} ${path.slice('/api'.length)}` },
+  };
+}
+
 const casos = [
   // --- métodos correctos (rutas canónicas) ---
   { id: 'health', method: 'GET', path: '/api/health', status: 200, includes: ['"status"'] },
-  { id: 'points', method: 'GET', path: '/api/points', status: 200, includes: ['"points"'] },
+  {
+    id: 'points',
+    method: 'GET',
+    path: '/api/points',
+    status: 200,
+    includes: ['"points"'],
+    // Sin `?page=` la respuesta no cambia (compat con el cliente) y los GET
+    // llevan cabeceras del límite de tasa (T3/FAL-05).
+    header: ['ratelimit-limit', '120'],
+    check: (cuerpo) =>
+      cuerpo && !('page' in cuerpo) && !('total' in cuerpo)
+        ? true
+        : 'la respuesta sin paginación no debe llevar metadatos',
+  },
+  {
+    id: 'points ?page=999 → página vacía con metadatos (T3)',
+    method: 'GET',
+    path: '/api/points?page=999&limit=10',
+    status: 200,
+    includes: ['"points"'],
+    check: (cuerpo) => {
+      if (!cuerpo || !Array.isArray(cuerpo.points)) return 'falta el array "points"';
+      if (cuerpo.points.length !== 0) return `page=999 devolvió ${cuerpo.points.length} puntos`;
+      if (cuerpo.page !== 999 || cuerpo.limit !== 10) return 'faltan page/limit correctos';
+      if (typeof cuerpo.total !== 'number' || cuerpo.totalPages !== Math.ceil(cuerpo.total / 10)) {
+        return 'faltan total/totalPages coherentes';
+      }
+      return true;
+    },
+  },
   { id: 'needs', method: 'GET', path: '/api/needs', status: 200, includes: ['"needs"'] },
   { id: 'comments', method: 'GET', path: '/api/comments', status: 200, includes: ['"comments"'] },
   { id: 'config', method: 'GET', path: '/api/config', status: 200, includes: ['supabaseConnected'] },
-  { id: 'sql por rewrite', method: 'GET', path: '/api/supabase/sql', status: 200, includes: ['"sql"'] },
+  { id: 'sql sin token → 401 (T3)', method: 'GET', path: '/api/supabase/sql', status: 401, includes: ['SQL_ADMIN_TOKEN'] },
+  {
+    id: 'sql con token → 200 (T3, solo local)',
+    method: 'GET',
+    path: '/api/supabase/sql',
+    headers: { authorization: `Bearer ${process.env.SQL_ADMIN_TOKEN}` },
+    status: 200,
+    includes: ['"sql"'],
+    // El token del despliegue solo lo conoce la persona: el caso con éxito
+    // se ejecuta contra el servidor local.
+    soloLocal: true,
+  },
   { id: 'cabeceras de seguridad', method: 'GET', path: '/api/health', status: 200, header: ['x-content-type-options', 'nosniff'] },
   {
     id: 'POST /api/points sin sesión',
@@ -317,6 +421,14 @@ const casos = [
   { id: 'PUT /api/needs', method: 'PUT', path: '/api/needs', status: 404, exactBody: { error: 'Ruta no encontrada: PUT /needs' } },
   { id: 'GET apoyo por método', method: 'GET', path: '/api/needs/XYZ/support', status: 404, exactBody: { error: 'Ruta no encontrada: GET /needs/XYZ/support' } },
 
+  // --- ciclo de vida (T2) ---
+  casoCiclo('PATCH /api/needs/XYZ sin sesión', 'PATCH', '/api/needs/XYZ', { status: 'resuelta' }, routedNeedsId),
+  casoCiclo('DELETE /api/points/XYZ sin sesión', 'DELETE', '/api/points/XYZ', undefined, routedPointsId),
+  // Con o sin rewrite, un método no soportado en la ruta con id es 404 y con
+  // la misma ruta canónica en el cuerpo (paridad Express ↔ funciones).
+  { id: 'GET /api/needs/XYZ → 404', method: 'GET', path: '/api/needs/XYZ', status: 404, exactBody: { error: 'Ruta no encontrada: GET /needs/XYZ' } },
+  { id: 'GET /api/points/XYZ → 404', method: 'GET', path: '/api/points/XYZ', status: 404, exactBody: { error: 'Ruta no encontrada: GET /points/XYZ' } },
+
   // --- espejos filesystem → 404 como Express ---
   { id: 'espejo GET /api/support-mine', method: 'GET', path: '/api/support-mine', status: 404, exactBody: { error: 'Ruta no encontrada: GET /support-mine' } },
   { id: 'espejo POST /api/needs-support?id=', method: 'POST', path: '/api/needs-support?id=XYZ', json: { action: 'add' }, status: 404, exactBody: { error: 'Ruta no encontrada: POST /needs-support' } },
@@ -365,8 +477,9 @@ for (const caso of casos) {
     });
     const text = await res.text();
 
-    let ok = res.status === caso.status;
-    let detalle = `${caso.method} ${caso.path} → ${res.status} (esperado ${caso.status})`;
+    const esperados = caso.statusAny ?? [caso.status];
+    let ok = esperados.includes(res.status);
+    let detalle = `${caso.method} ${caso.path} → ${res.status} (esperado ${esperados.join(' ó ')})`;
 
     if (ok && caso.exactBody) {
       let parsed;
@@ -393,6 +506,19 @@ for (const caso of casos) {
       if (got !== value) {
         ok = false;
         detalle += ` · header ${key}=${got} (esperado ${value})`;
+      }
+    }
+    if (ok && caso.check) {
+      let parsed = null;
+      try {
+        parsed = JSON.parse(text);
+      } catch {
+        // El `check` decide qué hacer con un cuerpo que no es JSON.
+      }
+      const veredicto = caso.check(parsed);
+      if (veredicto !== true) {
+        ok = false;
+        detalle += ` · ${typeof veredicto === 'string' ? veredicto : 'el check del cuerpo falló'}`;
       }
     }
     resultado(ok, `${caso.id}: ${detalle}`);

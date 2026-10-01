@@ -1,21 +1,29 @@
 import type {
   HelpCategory,
-  HelpNeed,
   HelpPoint,
   NeedStatus,
   NeedUrgency,
   PointStatus,
   UserRole,
 } from '../src/types/index.js';
+import type { HelpNeedWithAuthor } from './entities.js';
+import type { GeoPoint } from './geo.js';
 
 /**
  * Validación y saneamiento de los payloads que llegan por HTTP.
  *
  * Reglas generales:
  * - Nunca confiamos en el cuerpo de la petición (todo se valida y recorta).
+ * - **La identidad nunca se lee del cuerpo** (decisión 2026-09-28): los campos
+ *   `authorId`, `userId`, `userName`, `userRole`, `userBarrio` y `verified`
+ *   que mande el cliente se **ignoran** y el handler los rellena desde el JWT
+ *   verificado. Se ignoran (no se rechazan) para no romper a los clientes que
+ *   aún los envían; el validador estricto llega con el cliente (T9).
  * - Se normalizan espacios y largos máximos para evitar basura en la BD.
- * - Los enums se comparan contra listas permitidas; si no coincide, se usa
- *   un valor por defecto seguro.
+ * - Los enums se comparan contra listas permitidas; en la creación, si no
+ *   coincide, se usa un valor por defecto seguro; en una **actualización**
+ *   (PATCH/PUT) un valor desconocido se **rechaza**, para no escribir por
+ *   sorpresa un estado distinto del que pidió quien edita.
  */
 
 export type ValidationResult<T> = { ok: true; value: T } | { ok: false; errors: string[] };
@@ -24,6 +32,19 @@ const CATEGORIES: readonly HelpCategory[] = ['acopio', 'veterinaria', 'albergue'
 const POINT_STATUSES: readonly PointStatus[] = ['abierto', 'alta_demanda', 'cerrado'];
 const URGENCIES: readonly NeedUrgency[] = ['alta', 'media', 'baja'];
 const USER_ROLES: readonly UserRole[] = ['ciudadano', 'voluntario', 'coordinador'];
+/**
+ * Estados que un **autor** puede dar a su necesidad (FEAT-01). `archivada`
+ * entró con T10 (ciclo de vida en la UI): amplía `NeedStatus` del cliente en
+ * `src/types/index.ts` y se acepta exactamente igual que los demás. La
+ * columna `help_needs.status` es `TEXT` sin `CHECK` (`schema.sql:56`), así
+ * que no hay migración que tocar.
+ */
+export const NEED_STATUSES: readonly NeedStatus[] = [
+  'activa',
+  'en_proceso',
+  'resuelta',
+  'archivada',
+];
 
 export const LIMITS = {
   name: 160,
@@ -37,18 +58,71 @@ export const LIMITS = {
   historyItems: 10,
 } as const;
 
-export type PointDraft = Omit<HelpPoint, 'id' | 'createdAt' | 'updatedAt' | 'verified'> & {
-  id?: string;
-};
+export type PointDraft = Omit<
+  HelpPoint,
+  'id' | 'createdAt' | 'updatedAt' | 'verified' | 'authorId'
+> & { id?: string };
 
-export type NeedDraft = Omit<HelpNeed, 'id' | 'createdAt' | 'supportersCount'> & { id?: string };
+export type NeedDraft = Omit<
+  HelpNeedWithAuthor,
+  'id' | 'createdAt' | 'supportersCount' | 'authorId'
+> & { id?: string };
 
+/**
+ * Actualización parcial de una necesidad (`PATCH /api/needs/:id`).
+ *
+ * Solo campos editables por su autor: ni `id`, ni `supportersCount` (lo
+ * recuenta la BD), ni `authorId` (identidad del JWT), ni `createdAt`.
+ */
+export type NeedPatch = Partial<
+  Pick<
+    NeedDraft,
+    | 'title'
+    | 'description'
+    | 'category'
+    | 'urgency'
+    | 'barrio'
+    | 'contactName'
+    | 'contactPhone'
+    | 'items'
+    | 'status'
+    | 'imageUrl'
+  >
+>;
+
+/**
+ * Actualización de un punto (`PUT /api/points/:id`).
+ *
+ * Como `NeedPatch`: sin `id`, sin `authorId` y **sin `verified`** — marcar
+ * como verificado es una acción de moderación (T7), no del autor.
+ */
+export type PointPatch = Partial<
+  Pick<
+    PointDraft,
+    | 'name'
+    | 'category'
+    | 'lat'
+    | 'lng'
+    | 'address'
+    | 'barrio'
+    | 'comuna'
+    | 'phone'
+    | 'whatsapp'
+    | 'contactPerson'
+    | 'description'
+    | 'schedule'
+    | 'status'
+    | 'urgentItems'
+    | 'capacity'
+  >
+>;
+
+/**
+ * Comentario: solo el texto y el punto. El autor (`userId`, `userName`,
+ * `userRole`, `userBarrio`) lo rellena el handler desde la sesión verificada.
+ */
 export interface CommentDraft {
   pointId: string;
-  userId: string;
-  userName: string;
-  userRole: UserRole;
-  userBarrio: string;
   comment: string;
 }
 
@@ -56,6 +130,8 @@ export interface ChatDraft {
   message: string;
   /** Barrio declarado por el usuario para personalizar la respuesta. */
   barrio?: string;
+  /** Coordenadas del usuario, si las envió: habilitan el orden por proximidad. */
+  coords?: GeoPoint | null;
   history: Array<{ sender: 'user' | 'assistant'; text: string }>;
 }
 
@@ -122,7 +198,7 @@ export const normalizeCategory = (value: unknown): HelpCategory => oneOf(value, 
 export const normalizePointStatus = (value: unknown): PointStatus => oneOf(value, POINT_STATUSES, 'abierto');
 export const normalizeUrgency = (value: unknown): NeedUrgency => oneOf(value, URGENCIES, 'media');
 export const normalizeNeedStatus = (value: unknown): NeedStatus =>
-  oneOf(value, ['activa', 'en_proceso', 'resuelta'], 'activa');
+  oneOf(value, NEED_STATUSES, 'activa');
 export const normalizeRole = (value: unknown): UserRole => oneOf(value, USER_ROLES, 'ciudadano');
 
 /* -------------------------------------------------------------------------- */
@@ -166,7 +242,7 @@ export function validatePoint(raw: unknown): ValidationResult<PointDraft> {
       status: oneOf(raw.status, POINT_STATUSES, 'abierto'),
       urgentItems: stringList(raw.urgentItems, 25, 120),
       capacity: text(raw.capacity, LIMITS.medium),
-      authorId: optionalId(raw.authorId),
+      // `authorId` NO se lee del cuerpo: lo pone el handler desde el JWT.
     },
   };
 }
@@ -195,10 +271,222 @@ export function validateNeed(raw: unknown): ValidationResult<NeedDraft> {
       contactName: text(raw.contactName, LIMITS.medium),
       contactPhone: text(raw.contactPhone, 40),
       items: stringList(raw.items, 25, 120),
-      status: oneOf<NeedStatus>(raw.status, ['activa', 'en_proceso', 'resuelta'], 'activa'),
+      status: oneOf<NeedStatus>(raw.status, NEED_STATUSES, 'activa'),
       imageUrl: text(raw.imageUrl, 300),
     },
   };
+}
+
+/* -------------------------------------------------------------------------- */
+/* Actualizaciones (PATCH/PUT): estrictas, sin corregir en silencio            */
+/* -------------------------------------------------------------------------- */
+
+/** ¿El cuerpo trae alguna de las claves editables? (las demás se ignoran) */
+function hasEditableKey(raw: Record<string, unknown>, keys: readonly string[]): boolean {
+  return keys.some((key) => key in raw);
+}
+
+const NEED_PATCH_KEYS = [
+  'title',
+  'description',
+  'category',
+  'urgency',
+  'barrio',
+  'contactName',
+  'contactPhone',
+  'items',
+  'status',
+  'imageUrl',
+] as const;
+
+const POINT_PATCH_KEYS = [
+  'name',
+  'category',
+  'lat',
+  'lng',
+  'address',
+  'barrio',
+  'comuna',
+  'phone',
+  'whatsapp',
+  'contactPerson',
+  'description',
+  'schedule',
+  'status',
+  'urgentItems',
+  'capacity',
+] as const;
+
+/** Texto de un campo de parche: `''` y `null` lo borran, tipos no texto → error. */
+function patchText(
+  raw: Record<string, unknown>,
+  key: string,
+  max: number,
+  errors: string[],
+  label: string,
+): string | undefined {
+  const value = raw[key];
+  if (value === null) return ''; // borrado explícito
+  if (typeof value !== 'string') {
+    errors.push(`${label} debe ser texto.`);
+    return undefined;
+  }
+  return text(value, max);
+}
+
+/**
+ * Actualización de una necesidad (`PATCH /api/needs/:id`).
+ *
+ * A diferencia de la creación, **no se corrige en silencio** lo que llega
+ * mal: un `status`, `category` o `urgency` desconocido produce 400, para no
+ * escribir por sorpresa algo distinto de lo que pidió quien edita. Las
+ * claves desconocidas —incluidas las de identidad (`authorId`, `userId`,
+ * `verified`, …)— se ignoran. Un cuerpo sin campos editables es un 400:
+ * no hay nada que actualizar.
+ */
+export function validateNeedUpdate(raw: unknown): ValidationResult<NeedPatch> {
+  if (!isRecord(raw)) return fail('El cuerpo de la petición debe ser un objeto JSON.');
+  if (!hasEditableKey(raw, NEED_PATCH_KEYS)) {
+    return fail('El cuerpo no contiene campos actualizables de la necesidad.');
+  }
+
+  const errors: string[] = [];
+  const patch: NeedPatch = {};
+
+  if ('title' in raw) {
+    const title = patchText(raw, 'title', LIMITS.name, errors, 'El título');
+    if (title !== undefined) {
+      if (title.length < 5) errors.push('El título de la necesidad es obligatorio (mínimo 5 caracteres).');
+      else patch.title = title;
+    }
+  }
+  if ('description' in raw) {
+    const description = patchText(raw, 'description', LIMITS.long, errors, 'La descripción');
+    if (description !== undefined) patch.description = description;
+  }
+  if ('category' in raw) {
+    const value = text(raw.category, 40);
+    if (!(CATEGORIES as readonly string[]).includes(value)) {
+      errors.push('La categoría indicada no es válida (acopio | veterinaria | albergue | salud).');
+    } else patch.category = value as HelpCategory;
+  }
+  if ('urgency' in raw) {
+    const value = text(raw.urgency, 40);
+    if (!(URGENCIES as readonly string[]).includes(value)) {
+      errors.push('La urgencia indicada no es válida (alta | media | baja).');
+    } else patch.urgency = value as NeedUrgency;
+  }
+  if ('status' in raw) {
+    const value = text(raw.status, 40);
+    if (!(NEED_STATUSES as readonly string[]).includes(value)) {
+      errors.push('El estado indicado no es válido (activa | en_proceso | resuelta | archivada).');
+    } else patch.status = value as NeedStatus;
+  }
+  if ('barrio' in raw) {
+    const barrio = patchText(raw, 'barrio', LIMITS.barrio, errors, 'El barrio');
+    if (barrio !== undefined) {
+      if (barrio.length < 2) errors.push('El barrio es obligatorio.');
+      else patch.barrio = barrio;
+    }
+  }
+  if ('contactName' in raw) {
+    const value = patchText(raw, 'contactName', LIMITS.medium, errors, 'El nombre de contacto');
+    if (value !== undefined) patch.contactName = value;
+  }
+  if ('contactPhone' in raw) {
+    const value = patchText(raw, 'contactPhone', 40, errors, 'El teléfono de contacto');
+    if (value !== undefined) patch.contactPhone = value;
+  }
+  if ('imageUrl' in raw) {
+    const value = patchText(raw, 'imageUrl', 300, errors, 'La imagen');
+    if (value !== undefined) patch.imageUrl = value;
+  }
+  if ('items' in raw) {
+    if (raw.items !== null && !Array.isArray(raw.items)) {
+      errors.push('La lista de ítems debe ser un arreglo de textos.');
+    } else {
+      patch.items = stringList(raw.items, 25, 120);
+    }
+  }
+
+  if (errors.length > 0) return fail(...errors);
+  return { ok: true, value: patch };
+}
+
+/**
+ * Actualización de un punto (`PUT /api/points/:id`), con las mismas reglas
+ * estrictas que `validateNeedUpdate`: enums y tipos malos → 400; `id`,
+ * `authorId` y `verified` no se leen (T7 modera `verified`).
+ */
+export function validatePointUpdate(raw: unknown): ValidationResult<PointPatch> {
+  if (!isRecord(raw)) return fail('El cuerpo de la petición debe ser un objeto JSON.');
+  if (!hasEditableKey(raw, POINT_PATCH_KEYS)) {
+    return fail('El cuerpo no contiene campos actualizables del punto.');
+  }
+
+  const errors: string[] = [];
+  const patch: PointPatch = {};
+
+  if ('name' in raw) {
+    const name = patchText(raw, 'name', LIMITS.name, errors, 'El nombre');
+    if (name !== undefined) {
+      if (name.length < 3) errors.push('El nombre del punto es obligatorio (mínimo 3 caracteres).');
+      else patch.name = name;
+    }
+  }
+  if ('category' in raw) {
+    const value = text(raw.category, 40);
+    if (!(CATEGORIES as readonly string[]).includes(value)) {
+      errors.push('La categoría indicada no es válida (acopio | veterinaria | albergue | salud).');
+    } else patch.category = value as HelpCategory;
+  }
+  if ('status' in raw) {
+    const value = text(raw.status, 40);
+    if (!(POINT_STATUSES as readonly string[]).includes(value)) {
+      errors.push('El estado indicado no es válido (abierto | alta_demanda | cerrado).');
+    } else patch.status = value as PointStatus;
+  }
+  if ('lat' in raw) {
+    const lat = toNumber(raw.lat);
+    if (!inRange(lat, -90, 90)) errors.push('La latitud debe ser un número válido entre -90 y 90.');
+    else patch.lat = lat;
+  }
+  if ('lng' in raw) {
+    const lng = toNumber(raw.lng);
+    if (!inRange(lng, -180, 180)) errors.push('La longitud debe ser un número válida entre -180 y 180.');
+    else patch.lng = lng;
+  }
+  if ('address' in raw) {
+    const address = patchText(raw, 'address', LIMITS.address, errors, 'La dirección');
+    if (address !== undefined) {
+      if (address.length < 3) errors.push('La dirección es obligatoria.');
+      else patch.address = address;
+    }
+  }
+  if ('barrio' in raw) {
+    const barrio = patchText(raw, 'barrio', LIMITS.barrio, errors, 'El barrio');
+    if (barrio !== undefined) {
+      if (barrio.length < 2) errors.push('El barrio es obligatorio.');
+      else patch.barrio = barrio;
+    }
+  }
+  for (const key of ['comuna', 'phone', 'whatsapp', 'contactPerson', 'description', 'schedule', 'capacity'] as const) {
+    if (!(key in raw)) continue;
+    const label = { comuna: 'La comuna', phone: 'El teléfono', whatsapp: 'El WhatsApp', contactPerson: 'La persona de contacto', description: 'La descripción', schedule: 'El horario', capacity: 'La capacidad' }[key];
+    const max = { comuna: LIMITS.short, phone: 40, whatsapp: 40, contactPerson: LIMITS.medium, description: LIMITS.long, schedule: LIMITS.medium, capacity: LIMITS.medium }[key];
+    const value = patchText(raw, key, max, errors, label);
+    if (value !== undefined) patch[key] = value;
+  }
+  if ('urgentItems' in raw) {
+    if (raw.urgentItems !== null && !Array.isArray(raw.urgentItems)) {
+      errors.push('La lista de ítems urgentes debe ser un arreglo de textos.');
+    } else {
+      patch.urgentItems = stringList(raw.urgentItems, 25, 120);
+    }
+  }
+
+  if (errors.length > 0) return fail(...errors);
+  return { ok: true, value: patch };
 }
 
 export function validateComment(raw: unknown): ValidationResult<CommentDraft> {
@@ -213,16 +501,11 @@ export function validateComment(raw: unknown): ValidationResult<CommentDraft> {
 
   if (errors.length > 0) return fail(...errors);
 
+  // Ni `userId`, ni `userName`, ni `userRole`, ni `userBarrio`: la identidad
+  // y el nombre que se muestran salen de la sesión verificada (T1/FAL-03).
   return {
     ok: true,
-    value: {
-      pointId,
-      userId: text(raw.userId, 80) || 'usr-anon',
-      userName: text(raw.userName, LIMITS.medium) || 'Ciudadano Solidario',
-      userRole: oneOf(raw.userRole, USER_ROLES, 'ciudadano'),
-      userBarrio: text(raw.userBarrio, LIMITS.barrio) || 'Cali',
-      comment,
-    },
+    value: { pointId, comment },
   };
 }
 
@@ -245,11 +528,21 @@ export function validateChat(raw: unknown): ValidationResult<ChatDraft> {
   const location = isRecord(raw.userLocation) ? raw.userLocation : undefined;
   const barrio = location ? text(location.barrio, LIMITS.barrio) : '';
 
+  // FEAT-07: lat/lng opcionales. Un valor fuera de rango se ignora (nunca
+  // rompe la conversación por una coordenada mala).
+  let coords: GeoPoint | null = null;
+  if (location) {
+    const lat = toNumber(location.lat);
+    const lng = toNumber(location.lng);
+    if (inRange(lat, -90, 90) && inRange(lng, -180, 180)) coords = { lat, lng };
+  }
+
   return {
     ok: true,
     value: {
       message,
       barrio: barrio || undefined,
+      coords,
       history,
     },
   };

@@ -1,6 +1,35 @@
 import { HelpPoint, HelpNeed, UserProfile } from '../types';
 import { CDN_IMAGES } from '../config/images';
 
+/**
+ * Datos de ejemplo del **cliente**: 32 puntos, 6 necesidades y 4 comentarios.
+ *
+ * ## Semilla única (T11 · FAL-08) — léeme antes de tocar nada
+ *
+ * Este fichero es la fuente de verdad del respaldo local (lo que pinta la
+ * app **sin servidor** o con la BD vacía). El semillero del backend,
+ * `server/seedData.ts` (5 puntos / 3 necesidades), es hoy una **copia
+ * parcial**: sus ids son un subconjunto exacto de los de aquí
+ * (`cali-acopio-1`, `cali-vet-1`, `cali-salud-1`, `cali-albergue-1`,
+ * `cali-acopio-2`, `need-1..3`, `comm-1..4`) y sus `supportersCount`
+ * coinciden (18 / 34 / 22), así que local y producción no se contradicen en
+ * lo que comparten.
+ *
+ * Pendiente (dependencia del **agente-backend**, aquí no se toca `server/`):
+ * que `server/seedData.ts` **importe** los datasets de este fichero en vez
+ * de duplicarlos, para que `npm run db:seed` siembre exactamente lo mismo que
+ * pinta el cliente. Hasta entonces:
+ *
+ *  - **Con servidor**: manda la BD. El primer sync descarta el relleno local
+ *    que allí no aparezca (`SEED_IDS` + `mergeById` en `AppContext.tsx`), de
+ *    modo que `need-4..6` y los 27 puntos extra solo se ven sin conexión.
+ *  - **Sin servidor** (offline o arranque en frío): pinta esto, con sus
+ *    contadores de muestra — nunca son la verdad de los apoyos; el servidor
+ *    los reemplaza por los reales (`need_supporters`) al sincronizar.
+ *
+ * El README describe «5 puntos, 3 necesidades» (lo corrige T19) porque habla
+ * de lo que siembra `npm run db:seed`, no de este respaldo local.
+ */
 export const INITIAL_HELP_POINTS: HelpPoint[] = [
   {
     id: 'cali-acopio-1',

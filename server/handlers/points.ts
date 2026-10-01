@@ -1,48 +1,192 @@
 import { randomUUID } from 'node:crypto';
-import type { ApiHandler } from '../http.js';
+import type { ApiHandler, ApiRequest, ApiResult, JsonResponder } from '../http.js';
 import { effectiveMethod, notFoundResult } from '../http.js';
 import { getAuthenticatedUser, respondUnauthorized } from '../auth.js';
-import { writeLimiter } from '../limiters.js';
-import { memory, pushInCache } from '../store.js';
+import { readLimiter, writeLimiter } from '../limiters.js';
+import { pageMeta, paginate, readPageParams, type PageParams } from '../pagination.js';
+import { resolveEntityId } from '../resourceId.js';
+import { memory, pushInCache, removeFromCache, replaceInCache } from '../store.js';
 import {
   getSupabaseClient,
   mapPointRow,
   maybeVerifySchema,
   respondWriteFailure,
+  toPointPatchRow,
   toPointRow,
   withSupabaseRetry,
 } from '../supabase.js';
 import type { HelpPointRow } from '../supabase.js';
-import { validatePoint } from '../validation.js';
+import { validatePoint, validatePointUpdate } from '../validation.js';
 import type { HelpPoint } from '../../src/types/index.js';
 
 /**
- * `GET /api/points` · `POST /api/points`.
+ * `GET · POST /api/points` · `PUT · DELETE /api/points/:id`.
  *
  * Lectura desde Supabase con respaldo en la caché en memoria; escritura
- * autenticada con el límite de tasa compartido.
+ * autenticada con el límite de tasa compartido. El ciclo de vida (T2) solo
+ * lo usa **quien publicó el punto**: sesión obligatoria (401) y autoría
+ * comprobada contra el JWT (403). En Vercel las rutas con id llegan por los
+ * rewrites de `vercel.json`.
  */
-export const pointsHandler: ApiHandler = async (input, res) => {
-  const method = effectiveMethod(input.method);
 
-  if (method === 'GET') {
+/** Lee el punto de la caché o, si no está, de la base de datos. */
+async function loadPoint(id: string): Promise<HelpPoint | null> {
+  const cached = memory.points.find((point) => point.id === id);
+  if (cached) return cached;
+
+  await maybeVerifySchema();
+  const client = getSupabaseClient();
+  if (client) {
+    const { data, error } = await withSupabaseRetry<HelpPointRow[]>('Supabase select help_points', () =>
+      client.from('help_points').select('*').eq('id', id).limit(1),
+    );
+    if (!error && Array.isArray(data) && data[0]) {
+      const point = mapPointRow(data[0]);
+      memory.points = pushInCache(memory.points, point);
+      return point;
+    }
+  }
+  return null;
+}
+
+/** `true` solo si `authorId` es el `sub` del JWT presente (T2: 403 si no). */
+function isAuthor(authorId: string | undefined, userId: string): boolean {
+  return typeof authorId === 'string' && authorId.length > 0 && authorId === userId;
+}
+
+/**
+ * `PUT /api/points/:id` y `DELETE /api/points/:id`.
+ *
+ * Orden de comprobaciones: límite de tasa → sesión (401) → existencia (404)
+ * → autoría (403) → validación (400). El id se resuelve con la misma regla
+ * que los apoyos (`server/resourceId.ts`).
+ */
+async function lifecycle(
+  input: ApiRequest,
+  res: JsonResponder,
+  method: string,
+  id: string,
+): Promise<ApiResult> {
+  if (method !== 'PUT' && method !== 'DELETE') return notFoundResult(input);
+  if (writeLimiter.enforce(input.clientIp, res)) return null;
+
+  const user = await getAuthenticatedUser(input);
+  if (!user) {
+    respondUnauthorized(res, 'Debes iniciar sesión para editar un punto de ayuda.');
+    return null;
+  }
+
+  const point = await loadPoint(id);
+  if (!point) return { status: 404, body: { error: 'Punto de ayuda no encontrado.' } };
+  if (!isAuthor(point.authorId, user.userId)) {
+    return { status: 403, body: { error: 'Solo quien publicó el punto puede modificarlo.' } };
+  }
+
+  const now = new Date().toISOString();
+
+  if (method === 'DELETE') {
     await maybeVerifySchema();
     const client = getSupabaseClient();
-
     if (client) {
-      const { data, error } = await withSupabaseRetry<HelpPointRow[]>('Supabase help_points', () =>
-        client.from('help_points').select('*').order('created_at', { ascending: false }),
+      const { error } = await withSupabaseRetry('Supabase delete help_points', () =>
+        client.from('help_points').delete().eq('id', point.id),
       );
-
-      if (!error && Array.isArray(data) && data.length > 0) {
-        const points = data.map(mapPointRow);
-        memory.points = points;
-        return { status: 200, body: { points, source: 'supabase' } };
+      if (error) {
+        respondWriteFailure(res, 'el punto', error);
+        return null;
       }
     }
-
-    return { status: 200, body: { points: memory.points, source: 'memory_cache' } };
+    memory.points = removeFromCache(memory.points, point.id);
+    // Los comentarios del punto se van con él (misma regla que la FK
+    // `ON DELETE CASCADE` de `supabase/schema.sql`).
+    memory.comments = memory.comments.filter((comment) => comment.pointId !== point.id);
+    return { status: 200, body: { success: true, id: point.id } };
   }
+
+  const parsed = validatePointUpdate(input.body);
+  if (!parsed.ok) {
+    return { status: 400, body: { error: 'Datos de punto inválidos.', details: parsed.errors } };
+  }
+
+  const patch = parsed.value;
+  const updated: HelpPoint = {
+    ...point,
+    ...patch,
+    // Ni el id ni la autoría cambian con una edición; `verified` es de
+    // moderación (T7) y no se lee del parche.
+    id: point.id,
+    authorId: point.authorId,
+    verified: point.verified,
+    createdAt: point.createdAt,
+    updatedAt: now,
+  };
+
+  await maybeVerifySchema();
+  const client = getSupabaseClient();
+  if (client) {
+    const { error } = await withSupabaseRetry('Supabase update help_points', () =>
+      client
+        .from('help_points')
+        .update({ ...toPointPatchRow(patch), updated_at: now })
+        .eq('id', point.id),
+    );
+    if (error) {
+      respondWriteFailure(res, 'el punto', error);
+      return null;
+    }
+  }
+
+  memory.points = replaceInCache(memory.points, updated);
+  return { status: 200, body: { point: updated } };
+}
+
+/** Listado público, con paginación `?page=&limit=` opcional (T3/FAL-05). */
+async function listPoints(input: ApiRequest, res: JsonResponder): Promise<ApiResult> {
+  if (readLimiter.enforce(input.clientIp, res)) return null;
+
+  const params: PageParams | null = readPageParams(input.query);
+  await maybeVerifySchema();
+  const client = getSupabaseClient();
+
+  if (client) {
+    const { data, error, count } = await withSupabaseRetry<HelpPointRow[]>('Supabase help_points', () => {
+      let query = client
+        .from('help_points')
+        .select('*', params ? { count: 'exact' } : undefined)
+        .order('created_at', { ascending: false });
+      if (params) query = query.range(params.offset, params.offset + params.limit - 1);
+      return query;
+    });
+
+    // Con paginación se respeta lo que devuelva la BD (una página vacía es
+    // una página vacía); sin ella se conserva el comportamiento anterior:
+    // si la tabla está vacía, la caché de respaldo sigue pintando datos.
+    if (!error && Array.isArray(data) && (params || data.length > 0)) {
+      const points = data.map(mapPointRow);
+      // Solo una lectura completa refresca la caché: una página no lo es.
+      if (!params) memory.points = points;
+      const body: Record<string, unknown> = params
+        ? { points, source: 'supabase', ...pageMeta(params, typeof count === 'number' ? count : data.length) }
+        : { points, source: 'supabase' };
+      return { status: 200, body };
+    }
+  }
+
+  const points = params ? paginate(memory.points, params) : memory.points;
+  const body: Record<string, unknown> = params
+    ? { points, source: 'memory_cache', ...pageMeta(params, memory.points.length) }
+    : { points, source: 'memory_cache' };
+  return { status: 200, body };
+}
+
+export const pointsHandler: ApiHandler = async (input, res) => {
+  const method = effectiveMethod(input.method);
+  const id = resolveEntityId(input, 'points');
+
+  // Ruta con id (`/points/XYZ`): solo PUT/DELETE; el resto → 404.
+  if (id) return lifecycle(input, res, method, id);
+
+  if (method === 'GET') return listPoints(input, res);
 
   if (method === 'POST') {
     if (writeLimiter.enforce(input.clientIp, res)) return null;

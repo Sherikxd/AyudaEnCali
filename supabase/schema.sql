@@ -1,7 +1,8 @@
 -- ===========================================================================
 -- AyudaEnCali — esquema de Supabase (idempotente)
 -- Pega este archivo completo en el SQL Editor de Supabase y ejecútalo.
--- También queda disponible en GET /api/supabase/sql mientras corre el server.
+-- También queda disponible en GET /api/supabase/sql con
+-- `Authorization: Bearer <SQL_ADMIN_TOKEN>` (401 sin token, T3 semana 2).
 --
 -- Nota sobre permisos:
 --   * Lectura pública (cualquiera puede consultar el mapa/tablón).
@@ -58,6 +59,18 @@ CREATE TABLE IF NOT EXISTS help_needs (
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- Autoría de la necesidad (FAL-02): el `sub` del JWT de Clerk, escrito SOLO
+-- por el servidor desde la sesión verificada (nunca desde el cuerpo de la
+-- petición). Idempotente: `IF NOT EXISTS` permite aplicarlo sobre una BD ya
+-- creada sin romper `npm run db:setup`.
+--
+-- Backfill: no existe una tabla de usuarios local a la que vincular, así que
+-- las necesidades heredadas (semilla y las anteriores a esta migración)
+-- quedan con `NULL` = «autor desconocido». Por diseño, con `NULL` nadie puede
+-- editar ni borrar la fila («solo el autor»): es la opción segura.
+ALTER TABLE help_needs ADD COLUMN IF NOT EXISTS author_id TEXT;
+CREATE INDEX IF NOT EXISTS idx_help_needs_author_id ON help_needs (author_id);
+
 -- Índices de lectura frecuente (filtros del mapa y del tablón) -------------
 CREATE INDEX IF NOT EXISTS idx_help_points_category ON help_points (category);
 CREATE INDEX IF NOT EXISTS idx_help_points_created_at ON help_points (created_at DESC);
@@ -98,6 +111,33 @@ CREATE TABLE IF NOT EXISTS point_comments (
 );
 
 CREATE INDEX IF NOT EXISTS idx_point_comments_point_id ON point_comments (point_id, created_at DESC);
+
+-- Un comentario pertenece SIEMPRE a un punto existente (FAL-02): sin esta
+-- clave foránea los comentarios podían quedar huérfanos cuando se borraba el
+-- punto. `ON DELETE CASCADE` borra con él los comentarios del punto.
+--
+-- Idempotente (solo actúa la primera vez, cuando la restricción no existe)
+-- y con limpieza documentada: los comentarios de puntos inexistentes no son
+-- consultables (el filtrado es por `point_id` contra `help_points`), así que
+-- se eliminan antes de crear la restricción. Si la restricción ya está, el
+-- bloque no hace nada y no se borra ninguna fila.
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conname = 'point_comments_point_id_fkey'
+      AND conrelid = 'point_comments'::regclass
+  ) THEN
+    DELETE FROM point_comments
+    WHERE NOT EXISTS (
+      SELECT 1 FROM help_points WHERE help_points.id = point_comments.point_id
+    );
+
+    ALTER TABLE point_comments
+      ADD CONSTRAINT point_comments_point_id_fkey
+      FOREIGN KEY (point_id) REFERENCES help_points (id) ON DELETE CASCADE;
+  END IF;
+END $$;
 
 -- Row Level Security -------------------------------------------------------
 ALTER TABLE help_points ENABLE ROW LEVEL SECURITY;

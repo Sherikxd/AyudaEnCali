@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { useApp } from '../context/AppContext';
+import { useModalDialog } from '../hooks/useModalDialog';
 import { X, HelpCircle, ChevronDown, Cookie, CheckCircle2 } from 'lucide-react';
 import type { CookieConsent } from '../utils/consent';
 
@@ -185,24 +186,20 @@ export const FaqModal: React.FC<FaqModalProps> = ({ isOpen, onClose, initialSect
     if (isOpen) setOpenId(initialSection ?? FAQ_ITEMS[0].id);
   }, [isOpen, initialSection]);
 
-  // Escape cierra el modal (convención de accesibilidad).
-  useEffect(() => {
-    if (!isOpen) return undefined;
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') onClose();
-    };
-    window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
-  }, [isOpen, onClose]);
+  // Patrón de diálogo compartido (T13): Escape cierra + foco atrapado y
+  // devuelto al disparador (antes solo cerraba con Escape).
+  const dialogRef = useModalDialog<HTMLDivElement>(isOpen, onClose);
 
   if (!isOpen) return null;
 
   return (
     <div
+      ref={dialogRef}
       role="dialog"
       aria-modal="true"
       aria-labelledby="faq-modal-title"
-      className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-slate-900/60 backdrop-blur-xs overflow-y-auto"
+      tabIndex={-1}
+      className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-slate-900/60 backdrop-blur-xs overflow-y-auto focus:outline-none"
     >
       <div className="bg-white w-full max-w-2xl rounded-3xl shadow-2xl border border-slate-100 overflow-hidden my-auto">
         {/* Cabecera */}

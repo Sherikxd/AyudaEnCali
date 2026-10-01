@@ -15,6 +15,9 @@
 #          backend) y con clave primaria que impide apoyos duplicados
 #        · toggle_need_support → recuenta desde la BD y solo la SERVICE
 #          ROLE puede ejecutarla
+#        · point_comments → clave foránea a help_points (T1): sin punto no
+#          hay comentario y el borrado del punto arrastra los suyos
+#        · help_needs.author_id → columna + índice con backfill NULL (T1)
 #
 # Requiere: initdb, pg_ctl y psql en el PATH (PostgreSQL 14+).
 # Uso:  npm run verify:rls   (o: bash scripts/verify-rls.sh)
@@ -106,6 +109,10 @@ step "Semilla mínima"
 psql -v ON_ERROR_STOP=1 -q -c "
   INSERT INTO help_needs (id,title,description,category,barrio,contact_name,contact_phone)
   VALUES ('x1','Faltan cobijas','30 familias','acopio','San Antonio','Ana','300');"
+# Punto de prueba: desde T1 los comentarios exigen un punto existente (FK).
+psql -v ON_ERROR_STOP=1 -q -c "
+  INSERT INTO help_points (id,name,category,lat,lng,address,barrio,phone)
+  VALUES ('p1','Punto de pruebas','acopio',3.4,-76.5,'Calle 1 #2-3','San Antonio','3001234');"
 
 step "1) anon SÍ puede leer"
 psql -Atc "SET ROLE anon; SELECT '  leidas: ' || count(*) FROM help_needs; RESET ROLE;"
@@ -188,11 +195,11 @@ psql -Atc "SELECT '  apoyos de x1 registrados: ' || count(*) FROM need_supporter
 step "8) point_comments: solo el backend lee y escribe"
 psql -v ON_ERROR_STOP=1 -q -c "
   INSERT INTO point_comments (id, point_id, author_id, author_name, author_role, author_barrio, body)
-  VALUES ('c1','x1','user_a','Mariana Caicedo','voluntario','San Fernando','Traer agua potable.');"
+  VALUES ('c1','p1','user_a','Mariana Caicedo','voluntario','San Fernando','Traer agua potable.');"
 
 if psql -Atc "SET ROLE anon;
   INSERT INTO point_comments (id, point_id, author_id, author_name, body)
-  VALUES ('c2','x1','user_falso','Nadie','no deberia entrar');
+  VALUES ('c2','p1','user_falso','Nadie','no deberia entrar');
   RESET ROLE;" 2>&1 | grep -q "row-level security"; then
   echo "  OK: INSERT de anon bloqueado"
 else
@@ -241,6 +248,37 @@ for rol in anon authenticated; do
     echo "  OK: el rol $rol no puede ejecutarla"
   fi
 done
+
+step "11) point_comments: la FK impide comentarios huérfanos (T1)"
+if psql -Atc "INSERT INTO point_comments (id, point_id, author_id, author_name, body)
+  VALUES ('c3','punto-inexistente','user_a','Nadie','huérfano');" 2>&1 \
+  | grep -qi "violates foreign key constraint"; then
+  echo "  OK: comentario sin punto rechazado por la restricción"
+else
+  echo "  FALLO: entró un comentario huérfano"; fail=1
+fi
+
+# ON DELETE CASCADE: al borrar el punto se borran también sus comentarios.
+psql -v ON_ERROR_STOP=1 -q -c "DELETE FROM help_points WHERE id='p1';" >/dev/null
+orphanes=$(psql -Atc "SELECT count(*) FROM point_comments WHERE point_id='p1';")
+if [ "$orphanes" = "0" ]; then
+  echo "  OK: DELETE del punto arrastra sus comentarios"
+else
+  echo "  FALLO: quedan $orphanes comentarios sin su punto"; fail=1
+fi
+
+step "12) help_needs.author_id: columna, índice y backfill (T1)"
+cols=$(psql -Atc "SELECT count(*) FROM information_schema.columns
+                  WHERE table_schema='public' AND table_name='help_needs'
+                    AND column_name='author_id';")
+[ "$cols" = "1" ] || { echo "  FALLO: falta help_needs.author_id"; fail=1; }
+idx=$(psql -Atc "SELECT count(*) FROM pg_indexes
+                 WHERE schemaname='public' AND indexname='idx_help_needs_author_id';")
+[ "$idx" = "1" ] || { echo "  FALLO: falta idx_help_needs_author_id"; fail=1; }
+# Registro heredado (autor desconocido): NULL y, por diseño, no editable.
+heredado=$(psql -Atc "SELECT count(*) FROM help_needs WHERE id='x1' AND author_id IS NULL;")
+[ "$heredado" = "1" ] || { echo "  FALLO: el backfill dejó un author_id inesperado"; fail=1; }
+echo "  OK: author_id presente, con índice y NULL en los heredados"
 
 echo
 if [ "$fail" -eq 0 ]; then echo "RESULTADO: esquema y politicas RLS correctas [OK]"; else echo "RESULTADO: hay fallos [ERROR]"; fi

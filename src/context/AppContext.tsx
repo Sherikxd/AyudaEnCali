@@ -1,15 +1,18 @@
-import React, { createContext, useCallback, useContext, useEffect, useRef, useState, ReactNode } from 'react';
+import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, ReactNode } from 'react';
 import { useAuth, useClerk } from '@clerk/clerk-react';
 import {
   CommentsResponse,
   CommentResponse,
   ConfigResponse,
+  DeleteResponse,
   HelpNeed,
   HelpPoint,
   MySupportsResponse,
+  NeedPatch,
   NeedsResponse,
   NeedResponse,
   PointComment,
+  PointPatch,
   PointResponse,
   PointsResponse,
   SupportAction,
@@ -31,6 +34,7 @@ import { apiFetch, ApiError } from '../services/api';
 import { applyConsent, readConsent, saveConsent, type CookieConsent } from '../utils/consent';
 import { loadJSON, saveJSON } from '../utils/storage';
 import { countPending, mergeById } from '../utils/sync';
+import { newId } from '../utils/id';
 import { logger } from '../utils/logger';
 
 export interface ServerStatus {
@@ -60,8 +64,6 @@ interface AppContextType {
   setLocationError: (err: string | null) => void;
   isLocationModalOpen: boolean;
   setIsLocationModalOpen: (open: boolean) => void;
-  selectedPoint: HelpPoint | null;
-  setSelectedPoint: (point: HelpPoint | null) => void;
   selectedNeed: HelpNeed | null;
   setSelectedNeed: (need: HelpNeed | null) => void;
   isReportModalOpen: boolean;
@@ -95,12 +97,6 @@ interface AppContextType {
   /** Consentimiento de cookies (`null` = aún sin responder). */
   cookieConsent: CookieConsent | null;
   setCookieConsent: (value: CookieConsent) => void;
-  mapCenter: [number, number];
-  setMapCenter: (center: [number, number]) => void;
-  mapZoom: number;
-  setMapZoom: (zoom: number) => void;
-  initialCoordsForNewPoint: [number, number] | null;
-  setInitialCoordsForNewPoint: (coords: [number, number] | null) => void;
   serverStatus: ServerStatus;
   addHelpPoint: (
     pointData: Omit<HelpPoint, 'id' | 'createdAt' | 'updatedAt' | 'verified' | 'pending'>,
@@ -111,6 +107,17 @@ interface AppContextType {
   addPointComment: (pointId: string, commentText: string) => Promise<boolean>;
   toggleSavePoint: (pointId: string) => void;
   supportNeed: (needId: string, action: SupportAction) => Promise<void>;
+  /**
+   * Ciclo de vida (T10 · FEAT-01): edición y borrado de lo que publicó la
+   * cuenta actual. La identidad viaja **solo** en el JWT de Clerk (nunca en
+   * el cuerpo): el servidor responde 401 sin sesión y 403 si no eres el
+   * autor. Devuelven `true` cuando el cambio quedó confirmado por el
+   * servidor (o aplicado localmente si el elemento sigue `pending`).
+   */
+  updateNeed: (needId: string, patch: NeedPatch) => Promise<boolean>;
+  deleteNeed: (needId: string) => Promise<boolean>;
+  updatePoint: (pointId: string, patch: PointPatch) => Promise<boolean>;
+  deletePoint: (pointId: string) => Promise<boolean>;
   updateUserProfile: (profile: Partial<UserProfile>) => void;
   registerUser: (data: {
     name: string;
@@ -123,10 +130,45 @@ interface AppContextType {
   logoutUser: () => void;
   requestUserLocation: () => Promise<{ success: boolean; error?: string }>;
   calculateDistance: (lat: number, lng: number) => number | null;
-  focusPointOnMap: (point: HelpPoint) => void;
 }
 
 const AppContext = createContext<AppContextType | undefined>(undefined);
+
+/**
+ * Estado de la vista del mapa, separado del resto del contexto
+ * (T12 · FAL-09): centrar el mapa o seleccionar un punto actualiza
+ * **solo** a los consumidores de este contexto (MapView, ReportModal y
+ * los botones de «ver en el mapa» del chat y el perfil), en vez de
+ * re-renderizar tablón, cabecera y modales de paso.
+ */
+interface MapUIContextType {
+  mapCenter: [number, number];
+  setMapCenter: (center: [number, number]) => void;
+  mapZoom: number;
+  setMapZoom: (zoom: number) => void;
+  selectedPoint: HelpPoint | null;
+  setSelectedPoint: (point: HelpPoint | null) => void;
+  initialCoordsForNewPoint: [number, number] | null;
+  setInitialCoordsForNewPoint: (coords: [number, number] | null) => void;
+  /** Centra el mapa en un punto, lo selecciona y salta a la pestaña «Mapa». */
+  focusPointOnMap: (point: HelpPoint) => void;
+}
+
+const MapUIContext = createContext<MapUIContextType | undefined>(undefined);
+
+/**
+ * Devuelve `fn` con identidad estable (T12 · FAL-09): el wrapper se crea
+ * una sola vez y siempre delega en la copia del último render. Así el
+ * `value` del Provider puede memorizarse sin que las acciones —que se
+ * recrean en cada render— invaliden el `memo` ni queden con estado
+ * obsoleto. Solo se usa en las acciones expuestas por el contexto; por
+ * dentro el resto del código sigue llamando a las funciones originales.
+ */
+function useStableCallback<A extends unknown[], R>(fn: (...args: A) => R): (...args: A) => R {
+  const ref = useRef(fn);
+  ref.current = fn;
+  return useCallback((...args: A): R => ref.current(...args), []);
+}
 
 const STORAGE_KEYS = {
   POINTS: 'ayudaencali_points_v4',
@@ -162,6 +204,20 @@ const IDENTITY_PROMPT_COOLDOWN_MS = 5_000;
 /** Mensaje por defecto cuando una escritura se queda sin identidad de Clerk. */
 const IDENTITY_MESSAGE =
   'Para continuar necesitas entrar con tu cuenta de AyudaEnCali: así evitamos reportes falsos.';
+
+/**
+ * Campos de identidad que el cliente ya **no** envía en los cuerros de
+ * escritura (T9 · FAL-03): la identidad viaja solo en el JWT de Clerk y el
+ * servidor la lee de ahí. Se retiran también del reenvío de lo pendiente
+ * para que ningún payload vuelva a mandarlos.
+ */
+const IDENTITY_KEYS = ['authorId', 'userId', 'userName', 'userRole', 'userBarrio', 'verified'] as const;
+
+const withoutIdentity = (payload: object): Record<string, unknown> => {
+  const clean: Record<string, unknown> = { ...payload };
+  for (const key of IDENTITY_KEYS) delete clean[key];
+  return clean;
+};
 
 /** El servidor respondió «no tienes sesión válida» (T1: 401 en las escrituras). */
 const isUnauthorized = (error: unknown): error is ApiError =>
@@ -234,6 +290,16 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
   const [authModalMessage, setAuthModalMessage] = useState('');
   const [authCallback, setAuthCallback] = useState<(() => void) | null>(null);
+
+  /**
+   * Espejo de la identidad vigente (mismo patrón que `serverReachableRef`).
+   * La cola `pendingWrite` guarda un `build` que cierra sobre el render en
+   * que se encoló; al reanudarse, `ensureIdentity` debe juzgar con la sesión
+   * ACTUAL o la escritura se re-encolaría para siempre en vez de ejecutarse
+   * (T8 · lo cubre el L6 de `scripts/test-nucleos.mjs`).
+   */
+  const identityRef = useRef({ isSignedIn, clerkUserId, isRegistered: userProfile.isRegistered });
+  identityRef.current = { isSignedIn, clerkUserId, isRegistered: userProfile.isRegistered };
 
   /* ------------------------------------------------------------------ *
    * Avisos visibles (T7): éxitos, errores y reintentos que antes solo
@@ -438,12 +504,15 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     resumes: number,
     message: string,
   ): boolean => {
-    if (isSignedIn && clerkUserId) return true;
+    // Identidad ACTUAL (espejo): `build` puede venir de la cola y cerrar
+    // sobre un render sin sesión; con la lectura directa nunca se reanudaría.
+    const current = identityRef.current;
+    if (current.isSignedIn && current.clerkUserId) return true;
     queueWrite(build, resumes + 1);
     // Acción explícita del usuario: siempre se abre algo visible (no aplica
     // el enfriamiento de los 401 automáticos).
     lastIdentityPromptRef.current = Date.now();
-    if (!userProfile.isRegistered) openAuthModal(message);
+    if (!current.isRegistered) openAuthModal(message);
     else openSignIn();
     return false;
   };
@@ -473,11 +542,33 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     );
   };
 
+  /**
+   * Fallo de una operación del ciclo de vida (`PATCH/PUT/DELETE`): traduce
+   * el status a un aviso visible con el mensaje del servidor (403 «solo el
+   * autor», 404 «ya no existe»…). Siempre con `Toast` (T10).
+   */
+  const notifyLifecycleError = (error: unknown, what: string): void => {
+    if (isUnauthorized(error)) {
+      handleUnauthorized(`Tu sesión caducó: vuelve a entrar para ${what}.`);
+      return;
+    }
+    if (isServerUnreachable(error)) {
+      setReachable(false);
+      notify(`Sin conexión con el servidor: no se pudo ${what}. Inténtalo de nuevo en unos segundos.`, 'error');
+      return;
+    }
+    if (error instanceof ApiError && error.status >= 400 && error.status < 500) {
+      notify(error.message, 'error');
+      return;
+    }
+    logger.warn(`No se pudo ${what}:`, error);
+    notify(`No se pudo ${what}. Inténtalo de nuevo.`, 'error');
+  };
+
   const openFaq = (section?: string) => {
     setFaqSection(section ?? null);
     setIsFaqOpen(true);
   };
-
   const closeFaq = () => {
     setIsFaqOpen(false);
     setFaqSection(null);
@@ -503,7 +594,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   }) => {
     const updated: UserProfile = {
       ...userProfile,
-      id: `usr-cali-${Date.now()}`,
+      id: newId('usr-cali'),
       name: data.name,
       email: data.email,
       phone: data.phone,
@@ -812,7 +903,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         async (point) => {
           const data = await apiFetch<PointResponse>('/api/points', {
             method: 'POST',
-            body: point,
+            body: withoutIdentity(point),
             headers: { Authorization: `Bearer ${token}` },
           });
           if (!cancelled) confirmPoint(point.id, data.point);
@@ -825,7 +916,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         async (need) => {
           const data = await apiFetch<NeedResponse>('/api/needs', {
             method: 'POST',
-            body: need,
+            body: withoutIdentity(need),
             headers: { Authorization: `Bearer ${token}` },
           });
           if (!cancelled) confirmNeed(need.id, data.need);
@@ -838,7 +929,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         async (comment) => {
           const data = await apiFetch<CommentResponse>('/api/comments', {
             method: 'POST',
-            body: comment,
+            body: withoutIdentity(comment),
             headers: { Authorization: `Bearer ${token}` },
           });
           if (!cancelled) confirmComment(comment.id, data.comment);
@@ -999,13 +1090,16 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
     const newPoint: HelpPoint = {
       ...pointData,
-      id: `cali-point-${Date.now()}`,
+      id: newId('cali-point'),
       pending: true,
       // Nace sin verificar (decisión 2026-09-28): la verificación es un paso aparte.
       verified: false,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
-      authorId: userProfile.id || `usr-${Date.now()}`,
+      // Autoría = sesión de Clerk, nunca el perfil local (decisión 2026-09-28).
+      // El servidor la vuelve a tomar de su propio JWT; esto solo sirve para
+      // pintar «es mío» mientras la respuesta no llega.
+      authorId: clerkUserId ?? undefined,
     };
 
     setHelpPoints((prev) => [newPoint, ...prev]);
@@ -1028,7 +1122,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     try {
       const data = await apiFetch<PointResponse>('/api/points', {
         method: 'POST',
-        body: newPoint,
+        body: withoutIdentity(newPoint),
         headers: { Authorization: `Bearer ${token}` },
       });
       confirmPoint(newPoint.id, data.point);
@@ -1057,10 +1151,13 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
     const newNeed: HelpNeed = {
       ...needData,
-      id: `cali-need-${Date.now()}`,
+      id: newId('cali-need'),
       pending: true,
-      supportersCount: 1,
+      // Nace en 0 (T2): el primer apoyo real lo da la BD, nunca un contador
+      // inflado en el cliente.
+      supportersCount: 0,
       createdAt: new Date().toISOString(),
+      authorId: clerkUserId ?? undefined,
     };
 
     setHelpNeeds((prev) => [newNeed, ...prev]);
@@ -1075,7 +1172,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     try {
       const data = await apiFetch<NeedResponse>('/api/needs', {
         method: 'POST',
-        body: newNeed,
+        body: withoutIdentity(newNeed),
         headers: { Authorization: `Bearer ${token}` },
       });
       confirmNeed(newNeed.id, data.need);
@@ -1108,9 +1205,12 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     }
 
     const newComment: PointComment = {
-      id: `comm-${Date.now()}`,
+      id: newId('comm'),
       pointId,
-      userId: userProfile.id || 'usr-registered',
+      // Identidad de la sesión de Clerk, no del perfil local (decisión
+      // 2026-09-28): el servidor la sustituye por la suya resuelta.
+      userId: clerkUserId ?? '',
+      // Solo para pintar el comentario en local: no viaja en el payload.
       userName: userProfile.name,
       userRole: userProfile.role,
       userBarrio: userProfile.barrio,
@@ -1131,7 +1231,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     try {
       const data = await apiFetch<CommentResponse>('/api/comments', {
         method: 'POST',
-        body: newComment,
+        body: withoutIdentity(newComment),
         headers: { Authorization: `Bearer ${token}` },
       });
       confirmComment(newComment.id, data.comment);
@@ -1143,6 +1243,227 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     }
 
     return true;
+  };
+
+  /**
+   * Edita una necesidad propia (`PATCH /api/needs/:id`).
+   *
+   * Cambio optimista: se pinta al instante y se **revierte** si el servidor
+   * no lo confirma (401/403/404 o caída). Un elemento todavía `pending` no
+   * existe en el servidor, así que solo se aplica en local: lo recogerá el
+   * reenvío automático con el nuevo contenido.
+   */
+  const updateNeed = async (
+    needId: string,
+    patch: NeedPatch,
+    resumes = 0,
+  ): Promise<boolean> => {
+    if (
+      !ensureIdentity(
+        (more) => void updateNeed(needId, patch, more),
+        resumes,
+        'Inicia sesión con tu cuenta para editar esta necesidad.',
+      )
+    ) {
+      return false;
+    }
+
+    const previous = helpNeeds.find((item) => item.id === needId);
+    if (!previous) return false;
+
+    const applyPatch = (item: HelpNeed): HelpNeed => (item.id === needId ? { ...item, ...patch } : item);
+    setHelpNeeds((prev) => prev.map(applyPatch));
+    setSelectedNeed((prev) => (prev && prev.id === needId ? { ...prev, ...patch } : prev));
+
+    if (previous.pending) {
+      notify('Cambio aplicado en tu dispositivo: se sincronizará con el servidor en cuanto vuelva la conexión.', 'info');
+      return true;
+    }
+
+    const token = await getToken().catch(() => null);
+    if (!token) {
+      setHelpNeeds((prev) => prev.map((item) => (item.id === needId ? previous : item)));
+      setSelectedNeed((prev) => (prev && prev.id === needId ? previous : prev));
+      handleUnauthorized('Tu sesión no está activa: vuelve a entrar para editar la necesidad.');
+      return false;
+    }
+
+    try {
+      const data = await apiFetch<NeedResponse>(`/api/needs/${encodeURIComponent(needId)}`, {
+        method: 'PATCH',
+        body: patch,
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      confirmNeed(needId, data.need);
+      setReachable(true);
+      notify('Necesidad actualizada.', 'success');
+      return true;
+    } catch (error) {
+      setHelpNeeds((prev) => prev.map((item) => (item.id === needId ? previous : item)));
+      setSelectedNeed((prev) => (prev && prev.id === needId ? previous : prev));
+      notifyLifecycleError(error, 'editar la necesidad');
+      return false;
+    }
+  };
+
+  /** Borra una necesidad propia (`DELETE /api/needs/:id`). Misma política. */
+  const deleteNeed = async (needId: string, resumes = 0): Promise<boolean> => {
+    if (
+      !ensureIdentity(
+        (more) => void deleteNeed(needId, more),
+        resumes,
+        'Inicia sesión con tu cuenta para eliminar esta necesidad.',
+      )
+    ) {
+      return false;
+    }
+
+    const previous = helpNeeds.find((item) => item.id === needId);
+    if (!previous) return false;
+
+    setHelpNeeds((prev) => prev.filter((item) => item.id !== needId));
+    setSelectedNeed((prev) => (prev && prev.id === needId ? null : prev));
+
+    if (previous.pending) {
+      notify('Reporte eliminado de tu dispositivo.', 'success');
+      return true;
+    }
+
+    const token = await getToken().catch(() => null);
+    if (!token) {
+      setHelpNeeds((prev) => (prev.some((item) => item.id === needId) ? prev : [previous, ...prev]));
+      handleUnauthorized('Tu sesión no está activa: vuelve a entrar para eliminar la necesidad.');
+      return false;
+    }
+
+    try {
+      await apiFetch<DeleteResponse>(`/api/needs/${encodeURIComponent(needId)}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      setReachable(true);
+      notify('Necesidad eliminada del tablón.', 'success');
+      return true;
+    } catch (error) {
+      setHelpNeeds((prev) => (prev.some((item) => item.id === needId) ? prev : [previous, ...prev]));
+      setSelectedNeed(previous);
+      notifyLifecycleError(error, 'eliminar la necesidad');
+      return false;
+    }
+  };
+
+  /**
+   * Edita un punto propio (`PUT /api/points/:id`). El servidor exige el
+   * objeto completo de campos editables: aquí se manda el parche recibido y
+   * quien edita (el panel del mapa) parte siempre de la copia vigente.
+   */
+  const updatePoint = async (
+    pointId: string,
+    patch: PointPatch,
+    resumes = 0,
+  ): Promise<boolean> => {
+    if (
+      !ensureIdentity(
+        (more) => void updatePoint(pointId, patch, more),
+        resumes,
+        'Inicia sesión con tu cuenta para editar este punto.',
+      )
+    ) {
+      return false;
+    }
+
+    const previous = helpPoints.find((item) => item.id === pointId);
+    if (!previous) return false;
+
+    setHelpPoints((prev) => prev.map((item) => (item.id === pointId ? { ...item, ...patch } : item)));
+    setSelectedPoint((prev) => (prev && prev.id === pointId ? { ...prev, ...patch } : prev));
+
+    if (previous.pending) {
+      notify('Cambio aplicado en tu dispositivo: se sincronizará con el servidor en cuanto vuelva la conexión.', 'info');
+      return true;
+    }
+
+    const token = await getToken().catch(() => null);
+    if (!token) {
+      setHelpPoints((prev) => prev.map((item) => (item.id === pointId ? previous : item)));
+      setSelectedPoint((prev) => (prev && prev.id === pointId ? previous : prev));
+      handleUnauthorized('Tu sesión no está activa: vuelve a entrar para editar el punto.');
+      return false;
+    }
+
+    try {
+      const data = await apiFetch<PointResponse>(`/api/points/${encodeURIComponent(pointId)}`, {
+        method: 'PUT',
+        body: patch,
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      confirmPoint(pointId, data.point);
+      setReachable(true);
+      notify('Punto de ayuda actualizado.', 'success');
+      return true;
+    } catch (error) {
+      setHelpPoints((prev) => prev.map((item) => (item.id === pointId ? previous : item)));
+      setSelectedPoint((prev) => (prev && prev.id === pointId ? previous : prev));
+      notifyLifecycleError(error, 'editar el punto');
+      return false;
+    }
+  };
+
+  /** Borra un punto propio (`DELETE /api/points/:id`). */
+  const deletePoint = async (pointId: string, resumes = 0): Promise<boolean> => {
+    if (
+      !ensureIdentity(
+        (more) => void deletePoint(pointId, more),
+        resumes,
+        'Inicia sesión con tu cuenta para eliminar este punto.',
+      )
+    ) {
+      return false;
+    }
+
+    const previous = helpPoints.find((item) => item.id === pointId);
+    if (!previous) return false;
+    // Los comentarios del punto se ocultan con él y se restauran si falla.
+    const removedComments = pointComments.filter((comment) => comment.pointId === pointId);
+
+    setHelpPoints((prev) => prev.filter((item) => item.id !== pointId));
+    setSelectedPoint((prev) => (prev && prev.id === pointId ? null : prev));
+    setPointComments((prev) => prev.filter((comment) => comment.pointId !== pointId));
+
+    if (previous.pending) {
+      notify('Punto eliminado de tu dispositivo.', 'success');
+      return true;
+    }
+
+    const restoreLocal = () => {
+      setHelpPoints((prev) => (prev.some((item) => item.id === pointId) ? prev : [previous, ...prev]));
+      if (removedComments.length > 0) {
+        setPointComments((prev) => [...prev, ...removedComments]);
+      }
+    };
+
+    const token = await getToken().catch(() => null);
+    if (!token) {
+      restoreLocal();
+      setSelectedPoint(previous);
+      handleUnauthorized('Tu sesión no está activa: vuelve a entrar para eliminar el punto.');
+      return false;
+    }
+
+    try {
+      await apiFetch<DeleteResponse>(`/api/points/${encodeURIComponent(pointId)}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      setReachable(true);
+      notify('Punto eliminado del mapa.', 'success');
+      return true;
+    } catch (error) {
+      restoreLocal();
+      setSelectedPoint(previous);
+      notifyLifecycleError(error, 'eliminar el punto');
+      return false;
+    }
   };
 
   const toggleSavePoint = (pointId: string) => {
@@ -1273,69 +1594,186 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     setActiveTab('map');
   };
 
+  /* ------------------------------------------------------------------ *
+   * T12 · FAL-09 — acciones con identidad estable. Cada wrapper se crea
+   * una sola vez y delega en la copia vigente del render: internamente
+   * el resto del contexto sigue llamando a las funciones originales (se
+   * recrean —frescas— en cada render), pero los consumidores ven siempre
+   * el mismo wrapper, de modo que el `value` memorizado solo cambia de
+   * identidad cuando cambia el estado que expone.
+   * ------------------------------------------------------------------ */
+  const setUserBarrioLocationStable = useStableCallback(setUserBarrioLocation);
+  const setUserCustomCoordinatesStable = useStableCallback(setUserCustomCoordinates);
+  const closeAuthModalStable = useStableCallback(closeAuthModal);
+  const completeAuthModalStable = useStableCallback(completeAuthModal);
+  const openAuthModalStable = useStableCallback(openAuthModal);
+  const openFaqStable = useStableCallback(openFaq);
+  const closeFaqStable = useStableCallback(closeFaq);
+  const setCookieConsentStable = useStableCallback(setCookieConsent);
+  const addHelpPointStable = useStableCallback(addHelpPoint);
+  const addHelpNeedStable = useStableCallback(addHelpNeed);
+  const addPointCommentStable = useStableCallback(addPointComment);
+  const toggleSavePointStable = useStableCallback(toggleSavePoint);
+  const supportNeedStable = useStableCallback(supportNeed);
+  const updateNeedStable = useStableCallback(updateNeed);
+  const deleteNeedStable = useStableCallback(deleteNeed);
+  const updatePointStable = useStableCallback(updatePoint);
+  const deletePointStable = useStableCallback(deletePoint);
+  const updateUserProfileStable = useStableCallback(updateUserProfile);
+  const registerUserStable = useStableCallback(registerUser);
+  const logoutUserStable = useStableCallback(logoutUser);
+  const requestUserLocationStable = useStableCallback(requestUserLocation);
+  const calculateDistanceStable = useStableCallback(calculateDistance);
+  const focusPointOnMapStable = useStableCallback(focusPointOnMap);
+
+  /** `value` del contexto del mapa: solo cambia al centrar/seleccionar. */
+  const mapUiValue = useMemo<MapUIContextType>(
+    () => ({
+      mapCenter,
+      setMapCenter,
+      mapZoom,
+      setMapZoom,
+      selectedPoint,
+      setSelectedPoint,
+      initialCoordsForNewPoint,
+      setInitialCoordsForNewPoint,
+      focusPointOnMap: focusPointOnMapStable,
+    }),
+    [
+      mapCenter,
+      setMapCenter,
+      mapZoom,
+      setMapZoom,
+      selectedPoint,
+      setSelectedPoint,
+      initialCoordsForNewPoint,
+      setInitialCoordsForNewPoint,
+      focusPointOnMapStable,
+    ],
+  );
+
+  /**
+   * `value` del contexto principal, memorizado (T12 · FAL-09): solo se
+   * reconstruye cuando cambia el estado o las acciones que expone. Las
+   * acciones van con identidad estable (bloque anterior) para que el
+   * `useMemo` no se invalde en cada render por culpa de closures nuevas.
+   */
+  const appValue = useMemo<AppContextType>(
+    () => ({
+      activeTab,
+      setActiveTab,
+      helpPoints,
+      helpNeeds,
+      supportedNeedIds,
+      pointComments,
+      userProfile,
+      userLocation,
+      setUserLocation,
+      setUserBarrioLocation: setUserBarrioLocationStable,
+      setUserCustomCoordinates: setUserCustomCoordinatesStable,
+      isLocatingUser,
+      locationError,
+      setLocationError,
+      isLocationModalOpen,
+      setIsLocationModalOpen,
+      selectedNeed,
+      setSelectedNeed,
+      isReportModalOpen,
+      setIsReportModalOpen,
+      reportModalType,
+      setReportModalType,
+      isAuthModalOpen,
+      setIsAuthModalOpen,
+      closeAuthModal: closeAuthModalStable,
+      completeAuthModal: completeAuthModalStable,
+      authModalMessage,
+      openAuthModal: openAuthModalStable,
+      toasts,
+      notify,
+      dismissToast,
+      isFaqOpen,
+      faqSection,
+      openFaq: openFaqStable,
+      closeFaq: closeFaqStable,
+      cookieConsent,
+      setCookieConsent: setCookieConsentStable,
+      serverStatus,
+      addHelpPoint: addHelpPointStable,
+      addHelpNeed: addHelpNeedStable,
+      addPointComment: addPointCommentStable,
+      toggleSavePoint: toggleSavePointStable,
+      supportNeed: supportNeedStable,
+      updateNeed: updateNeedStable,
+      deleteNeed: deleteNeedStable,
+      updatePoint: updatePointStable,
+      deletePoint: deletePointStable,
+      updateUserProfile: updateUserProfileStable,
+      registerUser: registerUserStable,
+      logoutUser: logoutUserStable,
+      requestUserLocation: requestUserLocationStable,
+      calculateDistance: calculateDistanceStable,
+    }),
+    [
+      activeTab,
+      setActiveTab,
+      helpPoints,
+      helpNeeds,
+      supportedNeedIds,
+      pointComments,
+      userProfile,
+      userLocation,
+      setUserLocation,
+      setUserBarrioLocationStable,
+      setUserCustomCoordinatesStable,
+      isLocatingUser,
+      locationError,
+      setLocationError,
+      isLocationModalOpen,
+      setIsLocationModalOpen,
+      selectedNeed,
+      setSelectedNeed,
+      isReportModalOpen,
+      setIsReportModalOpen,
+      reportModalType,
+      setReportModalType,
+      isAuthModalOpen,
+      setIsAuthModalOpen,
+      closeAuthModalStable,
+      completeAuthModalStable,
+      authModalMessage,
+      openAuthModalStable,
+      toasts,
+      notify,
+      dismissToast,
+      isFaqOpen,
+      faqSection,
+      openFaqStable,
+      closeFaqStable,
+      cookieConsent,
+      setCookieConsentStable,
+      serverStatus,
+      addHelpPointStable,
+      addHelpNeedStable,
+      addPointCommentStable,
+      toggleSavePointStable,
+      supportNeedStable,
+      updateNeedStable,
+      deleteNeedStable,
+      updatePointStable,
+      deletePointStable,
+      updateUserProfileStable,
+      registerUserStable,
+      logoutUserStable,
+      requestUserLocationStable,
+      calculateDistanceStable,
+    ],
+  );
+
   return (
-    <AppContext.Provider
-      value={{
-        activeTab,
-        setActiveTab,
-        helpPoints,
-        helpNeeds,
-        supportedNeedIds,
-        pointComments,
-        userProfile,
-        userLocation,
-        setUserLocation,
-        setUserBarrioLocation,
-        setUserCustomCoordinates,
-        isLocatingUser,
-        locationError,
-        setLocationError,
-        isLocationModalOpen,
-        setIsLocationModalOpen,
-        selectedPoint,
-        setSelectedPoint,
-        selectedNeed,
-        setSelectedNeed,
-        isReportModalOpen,
-        setIsReportModalOpen,
-        reportModalType,
-        setReportModalType,
-        isAuthModalOpen,
-        setIsAuthModalOpen,
-        closeAuthModal,
-        completeAuthModal,
-        authModalMessage,
-        openAuthModal,
-        toasts,
-        notify,
-        dismissToast,
-        isFaqOpen,
-        faqSection,
-        openFaq,
-        closeFaq,
-        cookieConsent,
-        setCookieConsent,
-        mapCenter,
-        setMapCenter,
-        mapZoom,
-        setMapZoom,
-        initialCoordsForNewPoint,
-        setInitialCoordsForNewPoint,
-        serverStatus,
-        addHelpPoint,
-        addHelpNeed,
-        addPointComment,
-        toggleSavePoint,
-        supportNeed,
-        updateUserProfile,
-        registerUser,
-        logoutUser,
-        requestUserLocation,
-        calculateDistance,
-        focusPointOnMap,
-      }}
-    >
-      {children}
+    <AppContext.Provider value={appValue}>
+      <MapUIContext.Provider value={mapUiValue}>
+        {children}
+      </MapUIContext.Provider>
     </AppContext.Provider>
   );
 };
@@ -1344,6 +1782,15 @@ export const useApp = () => {
   const context = useContext(AppContext);
   if (!context) {
     throw new Error('useApp must be used within an AppProvider');
+  }
+  return context;
+};
+
+/** Estado de la vista del mapa (T12): separado para no re-renderizar el resto. */
+export const useMapUI = () => {
+  const context = useContext(MapUIContext);
+  if (!context) {
+    throw new Error('useMapUI must be used within an AppProvider');
   }
   return context;
 };

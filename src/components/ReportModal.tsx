@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { useApp } from '../context/AppContext';
+import { useApp, useMapUI } from '../context/AppContext';
+import { useModalDialog } from '../hooks/useModalDialog';
 import { HelpCategory, NeedUrgency } from '../types';
 import { CALI_BARRIOS } from '../data/initialData';
 import { CALI_BARRIOS_DATA } from '../data/caliLocations';
@@ -15,14 +16,14 @@ export const ReportModal: React.FC = () => {
     isReportModalOpen,
     setIsReportModalOpen,
     reportModalType,
-    initialCoordsForNewPoint,
-    setInitialCoordsForNewPoint,
     addHelpPoint,
     addHelpNeed,
     userLocation,
     userProfile,
     openAuthModal,
   } = useApp();
+  // Coordenadas del punto a reportar: viven en el contexto del mapa (T12).
+  const { initialCoordsForNewPoint, setInitialCoordsForNewPoint } = useMapUI();
 
   // Mode: 'point' (Centro/Punto en mapa) or 'need' (Necesidad en el Tablón)
   const [formMode, setFormMode] = useState<'point' | 'need'>(reportModalType);
@@ -64,12 +65,16 @@ export const ReportModal: React.FC = () => {
     }
   }, [initialCoordsForNewPoint, userLocation]);
 
-  if (!isReportModalOpen) return null;
-
   const handleClose = () => {
     setIsReportModalOpen(false);
     setInitialCoordsForNewPoint(null);
   };
+
+  // Diálogo accesible (T13): Escape cierra, el foco queda atrapado dentro y
+  // vuelve al botón que lo abrió.
+  const dialogRef = useModalDialog<HTMLDivElement>(isReportModalOpen, handleClose);
+
+  if (!isReportModalOpen) return null;
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -122,12 +127,19 @@ export const ReportModal: React.FC = () => {
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-slate-900/60 backdrop-blur-xs overflow-y-auto">
+    <div
+      ref={dialogRef}
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="report-modal-title"
+      tabIndex={-1}
+      className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-slate-900/60 backdrop-blur-xs overflow-y-auto focus:outline-none"
+    >
       <div className="bg-white w-full max-w-xl rounded-3xl shadow-2xl border border-slate-100 overflow-hidden my-auto max-h-[92vh] flex flex-col">
         {/* Modal Header */}
         <div className="px-5 py-4 border-b border-slate-100 flex items-center justify-between">
           <div>
-            <h2 className="text-base font-extrabold text-slate-900">
+            <h2 id="report-modal-title" className="text-base font-extrabold text-slate-900">
               {formMode === 'point' ? 'Reportar Centro o Punto de Ayuda' : 'Publicar Necesidad Solidaria'}
             </h2>
             <p className="text-xs text-slate-500">

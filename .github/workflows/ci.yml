@@ -1,17 +1,21 @@
 # -----------------------------------------------------------------------
-# Pipeline de verificación (R5 del checklist de T11).
+# Pipeline de verificación (R5 del checklist de T11) — gate de la CI.
 #
-# El deploy de Vercel solo ejecuta `vite build`: si `tsc --noEmit` está
-# roto o un test falla, la producción se sube igual. Este workflow es el
-# gate previo: nada llega a Production sin pasar por aquí.
+# El deploy de Vercel ejecuta `npm run lint && npm run test:ui && vite build`
+# (vercel.json): tipos rotos o tests rojos no llegan a Production. Este
+# workflow es el segundo filtro en GitHub (PR y push a main); además
+# engancha el humo de las funciones y RLS.
 #
 # Pasos (mismos comandos que AGENTS.md declara obligatorios):
-#   1. npm run lint        → tsc --noEmit (estricto)
-#   2. npx vite build      → build de producción
-#   3. npm run test:ui     → tests en jsdom
-#   4. npm run smoke:vercel→ humo de las funciones api/*.ts (hermético)
-#   5. npm run verify:rls  → SOLO si cambió supabase/schema.sql (necesita
-#                            red y PostgreSQL; no bloquea el resto)
+#   1. npm run lint          → tsc --noEmit (estricto)
+#   2. npx vite build        → build de producción
+#   3. npm run test:ui       → tests en jsdom
+#   4. npm run test:server   → núcleos de servidor (T6); se omite mientras
+#                              no exista scripts/test-nucleos.mjs
+#   5. npm run smoke:vercel  → humo de las funciones api/*.ts (hermético)
+#   6. npm run verify:rls    → SOLO si cambió supabase/schema.sql (push:
+#                              contra el sha anterior; PR: contra la rama
+#                              base) y entonces SÍ bloquea el pipeline
 #
 # Nota: no hay package-lock.json (el repo usa bun.lock, congelado y de
 # propiedad de la persona), por eso es `npm ci || npm install`.
@@ -68,28 +72,64 @@ jobs:
           # repo VITE_CLERK_PUBLISHABLE_KEY y este || la usará.
           VITE_CLERK_PUBLISHABLE_KEY: ${{ secrets.VITE_CLERK_PUBLISHABLE_KEY || 'pk_test_Y2xlcmsuZXhhbXBsZS5jb20k' }}
 
+      - name: Tests de núcleos de servidor (test:server)
+        # T6 (agente-backend) añade scripts/test-nucleos.mjs; hasta entonces
+        # el paso aparece como «skipped» en vez de fallar.
+        if: hashFiles('scripts/test-nucleos.mjs') != ''
+        run: npm run test:server
+        env:
+          VITE_CLERK_PUBLISHABLE_KEY: ${{ secrets.VITE_CLERK_PUBLISHABLE_KEY || 'pk_test_Y2xlcmsuZXhhbXBsZS5jb20k' }}
+
       - name: Humo de las funciones de Vercel
         run: npm run smoke:vercel
 
-      # --- RLS: solo si cambió el esquema, y sin bloquear el pipeline ---
+      # --- RLS: SOLO si cambió supabase/schema.sql, y entonces bloquea -----
       - name: Detectar cambios en supabase/schema.sql
         id: rls
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BEFORE_SHA: ${{ github.event.before }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
-          if git diff --name-only "${{ github.event.before }}" HEAD -- supabase/schema.sql 2>/dev/null | grep -q . \
-             || [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+          # push → sha anterior del branch; PR → sha de la rama base.
+          # Sin base comparable (primer push, workflow_dispatch, sha que ya
+          # no existe) se ejecuta: ante la duda validar es más seguro que
+          # saltarse el chequeo de RLS.
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            BASE="$PR_BASE_SHA"
+          else
+            BASE="$BEFORE_SHA"
+          fi
+          if [ -z "$BASE" ] || [ "$BASE" = "0000000000000000000000000000000000000000" ] || ! git cat-file -e "$BASE" 2>/dev/null; then
+            echo "Sin base comparable ('${BASE:-vacía}'): se ejecuta verify:rls."
+            echo "cambio=true" >> "$GITHUB_OUTPUT"
+          elif git diff --name-only "$BASE" HEAD -- supabase/schema.sql | grep -q .; then
+            echo "cambió supabase/schema.sql entre $BASE y HEAD"
             echo "cambio=true" >> "$GITHUB_OUTPUT"
           else
+            echo "supabase/schema.sql intacto entre $BASE y HEAD"
             echo "cambio=false" >> "$GITHUB_OUTPUT"
           fi
 
       - name: PostgreSQL para verify:rls
         if: steps.rls.outputs.cambio == 'true'
         run: |
-          command -v initdb >/dev/null || (sudo apt-get update && sudo apt-get install -y postgresql)
+          if ! command -v initdb >/dev/null; then
+            sudo apt-get update && sudo apt-get install -y postgresql
+          fi
+          # Ubuntu guarda los binarios en /usr/lib/postgresql/<v>/bin, que
+          # no siempre está en el PATH del runner: se añade para este paso
+          # y para los siguientes.
+          PG_BIN="$(ls -d /usr/lib/postgresql/*/bin 2>/dev/null | sort -V | tail -n 1 || true)"
+          if [ -n "$PG_BIN" ]; then
+            echo "$PG_BIN" >> "$GITHUB_PATH"
+            export PATH="$PG_BIN:$PATH"
+          fi
+          command -v initdb && command -v pg_ctl && command -v psql
 
       - name: Validar RLS (schema.sql)
         if: steps.rls.outputs.cambio == 'true'
-        # continue-on-error: requiere red y binarios de PostgreSQL; no debe
-        # tumbar el resto del gate si el runner no los tiene.
-        continue-on-error: true
+        # Sin continue-on-error: si el esquema cambió, un RLS rojo PARA el
+        # pipeline (T17/FAL-12). verify:rls usa un clúster desechable en
+        # /tmp: no necesita red ni toca el proyecto real de Supabase.
         run: npm run verify:rls

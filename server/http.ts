@@ -227,24 +227,186 @@ export async function readJsonBody(req: BodyCarrier, res: JsonResponder): Promis
 /** Petición con lo mínimo para extraer la IP del cliente. */
 export interface IpCarrier {
   headers: IncomingHttpHeaders;
-  /** `req.ip` de Express (con `trust proxy` ya resuelve el `X-Forwarded-For`). */
+  /** `req.ip` de Express (con `trust proxy` resuelve la cadena de proxys). */
   ip?: string;
   socket?: { remoteAddress?: string | null };
+}
+
+/* -------------------------------------------------------------------------- */
+/* Validación y normalización de IPs (FAL-06)                                   */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Devuelve la forma canónica de una dirección IP, o `null` si no lo es.
+ *
+ * Solo se aceptan formatos estrictos (IPv4 con octetos 0-255 sin ceros a la
+ * izquierda; IPv6 con grupos de 1-4 dígitos hexadecimales y como mucho un
+ * `::`; incluida la forma IPv4-mapeada `::ffff:1.2.3.4`). El resultado es la
+ * **clave** del limitador de tasa, así que nunca puede ser una cadena
+ * arbitraria mandada por el cliente:
+ *
+ *  - `::ffff:1.2.3.4` → `1.2.3.4` (misma cuenta que su IPv4);
+ *  - `2001:0DB8::0001` → `2001:db8::1` (misma cuenta que su forma corta);
+ *  - `%eth0` (zone id) y corchetes (`[::1]`) se ignoran.
+ */
+export function normalizeIp(raw: string): string | null {
+  let value = raw.trim().toLowerCase();
+  if (value.startsWith('[') && value.endsWith(']')) value = value.slice(1, -1).trim();
+  if (value === '') return null;
+  if (value.includes(':')) return canonicalIpv6(value);
+  return canonicalIpv4(value);
+}
+
+function canonicalIpv4(value: string): string | null {
+  const parts = value.split('.');
+  if (parts.length !== 4) return null;
+  const octets: number[] = [];
+  for (const part of parts) {
+    // Sin ceros a la izquierda: `010` sería ambiguo (¿octal?) y se rechaza.
+    if (!/^(0|[1-9][0-9]{0,2})$/.test(part)) return null;
+    const octet = Number(part);
+    if (octet > 255) return null;
+    octets.push(octet);
+  }
+  return octets.join('.');
+}
+
+/** Longitud máxima de una IPv4-mapeada escrita en notación hexadecimal. */
+function ipv4TailToHex(value: string): string | null {
+  const octets = canonicalIpv4(value);
+  if (!octets) return null;
+  const [a, b, c, d] = octets.split('.').map(Number);
+  const high = (((a << 8) | b) >>> 0).toString(16);
+  const low = (((c << 8) | d) >>> 0).toString(16);
+  return `${high}:${low}`;
+}
+
+/** Colapsa la tira de ceros más larga (≥ 2 grupos) a la forma `::`. */
+function formatIpv6Groups(groups: string[]): string {
+  const parts = groups.map((group) => Number.parseInt(group, 16).toString(16));
+  let runStart = -1;
+  let bestStart = -1;
+  let bestLen = 0;
+  for (let i = 0; i <= parts.length; i += 1) {
+    if (i < parts.length && parts[i] === '0') {
+      if (runStart === -1) runStart = i;
+      continue;
+    }
+    const len = runStart === -1 ? 0 : i - runStart;
+    if (len > bestLen) {
+      bestLen = len;
+      bestStart = runStart;
+    }
+    runStart = -1;
+  }
+  if (bestLen < 2) return parts.join(':');
+  const head = parts.slice(0, bestStart).join(':');
+  const tail = parts.slice(bestStart + bestLen).join(':');
+  return `${head}::${tail}`;
+}
+
+/**
+ * `::ffff:1.2.3.4` (IPv4-mapeada) → `1.2.3.4`.
+ *
+ * Node reporta los sockets duales como `::ffff:203.0.113.7` y una XFF puede
+ * traer `203.0.113.7`: sin este paso el mismo cliente tendría dos cuentas
+ * distintas en el limitador (FAL-06 pide «misma IP en IPv4 y `::ffff:` →
+ * misma cuenta»).
+ */
+function ipv4FromMapped(groups: string[]): string | null {
+  if (groups.length !== 8) return null;
+  for (let i = 0; i < 5; i += 1) {
+    if (Number.parseInt(groups[i], 16) !== 0) return null;
+  }
+  if (Number.parseInt(groups[5], 16) !== 0xffff) return null;
+  const high = Number.parseInt(groups[6], 16);
+  const low = Number.parseInt(groups[7], 16);
+  return `${high >> 8}.${high & 0xff}.${low >> 8}.${low & 0xff}`;
+}
+
+/** Forma canónica final: IPv4 si es IPv4-mapeada, si no, IPv6 comprimida. */
+function finishIpv6(groups: string[]): string {
+  return ipv4FromMapped(groups) ?? formatIpv6Groups(groups);
+}
+
+function canonicalIpv6(value: string): string | null {
+  const zone = value.indexOf('%');
+  let addr = zone === -1 ? value : value.slice(0, zone);
+  if (addr === '' || addr.length > 45) return null;
+
+  // Último componente en IPv4 (`::ffff:1.2.3.4`) → dos grupos hexadecimales.
+  const lastColon = addr.lastIndexOf(':');
+  if (lastColon !== -1 && addr.slice(lastColon + 1).includes('.')) {
+    const hex = ipv4TailToHex(addr.slice(lastColon + 1));
+    if (!hex) return null;
+    addr = `${addr.slice(0, lastColon + 1)}${hex}`;
+  }
+
+  const halves = addr.split('::');
+  if (halves.length > 2) return null; // más de un `::` no es una IPv6 válida
+
+  const toGroups = (part: string): string[] | null => {
+    if (part === '') return [];
+    const groups = part.split(':');
+    for (const group of groups) {
+      if (!/^[0-9a-f]{1,4}$/.test(group)) return null;
+    }
+    return groups;
+  };
+
+  const head = toGroups(halves[0]);
+  if (!head) return null;
+
+  if (halves.length === 1) {
+    if (head.length !== 8) return null;
+    return finishIpv6(head);
+  }
+
+  const tail = toGroups(halves[1]);
+  if (!tail) return null;
+  // `::` representa al menos un grupo: 8 en total con las dos mitades.
+  if (head.length + tail.length > 7) return null;
+  const fill = new Array<string>(8 - head.length - tail.length).fill('0');
+  return finishIpv6([...head, ...fill, ...tail]);
 }
 
 /**
  * IP del cliente usada como clave del limitador de tasa.
  *
- * En Vercel (y en Cloud Run / Nginx) la IP real viene en la primera posición
- * de `X-Forwarded-For`; fuera de un proxy se cae a `req.ip` y, en último
- * término, al socket local.
+ * Cadena de decisión (FAL-06, ver `docs/agentes/memoria/19-backend-p1.md`):
+ *
+ *  1. **`req.ip` de Express si es una IP válida.** Con `trust proxy = 1`
+ *     (solo `NODE_ENV=production`, `server/app.ts`) Express devuelve la
+ *     dirección del **primer salto no confiable** contando desde el socket:
+ *     la que añadió el proxy más próximo, inalterable por el cliente. Sin
+ *     proxy (desarrollo) devuelve el socket, de modo que una
+ *     `X-Forwarded-For` mandada a mano **no** cambia la clave.
+ *  2. **Sin `req.ip`** (adaptador de Vercel: `IncomingMessage` puro) se lee
+ *     `X-Forwarded-For` y se toma el **último** salto con formato de IP
+ *     válido —el primero hacia el cliente, el que añadió el salto más
+ *     próximo— emulando `trust proxy = 1` para que ambos adaptadores
+ *     calculen la misma clave. Cada proxy añade su entrada al final, así que
+ *     una entrada falsa escrita por el cliente queda a la izquierda y no se
+ *     usa. Una entrada corrupta se salta en lugar de romper la clave.
+ *  3. **Respaldo:** la IP del socket normalizada y, en último término,
+ *     `'unknown'`.
  */
 export function clientIp(req: IpCarrier): string {
+  const fromExpress = req.ip ? normalizeIp(req.ip) : null;
+  if (fromExpress) return fromExpress;
+
   const forwarded = req.headers['x-forwarded-for'];
-  const raw = Array.isArray(forwarded) ? forwarded[0] : forwarded;
-  if (typeof raw === 'string') {
-    const first = raw.split(',')[0]?.trim();
-    if (first) return first;
+  const lines = Array.isArray(forwarded) ? forwarded : [forwarded];
+  for (let line = lines.length - 1; line >= 0; line -= 1) {
+    const raw = lines[line];
+    if (typeof raw !== 'string') continue;
+    const hops = raw.split(',');
+    for (let i = hops.length - 1; i >= 0; i -= 1) {
+      const normalized = normalizeIp(hops[i]);
+      if (normalized) return normalized;
+    }
   }
-  return req.ip ?? req.socket?.remoteAddress ?? 'unknown';
+
+  const socketAddress = req.socket?.remoteAddress;
+  return (socketAddress ? normalizeIp(socketAddress) : null) ?? 'unknown';
 }

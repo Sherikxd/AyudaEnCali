@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { useAuth, useClerk } from '@clerk/clerk-react';
 import { useApp } from '../context/AppContext';
+import { useModalDialog } from '../hooks/useModalDialog';
 import { CALI_BARRIOS } from '../data/initialData';
 import { UserRole } from '../types';
 import { X, UserPlus, Heart, CheckCircle2, LogIn } from 'lucide-react';
@@ -43,15 +44,9 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     if (isOpen) setError('');
   }, [isOpen]);
 
-  // Escape cierra el modal (convención de accesibilidad).
-  useEffect(() => {
-    if (!isOpen) return undefined;
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') onClose();
-    };
-    window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
-  }, [isOpen, onClose]);
+  // Diálogo accesible (T13): Escape cierra (estaba ya en el componente, ahora
+  // en el patrón compartido), el foco queda atrapado dentro y vuelve al botón.
+  const dialogRef = useModalDialog<HTMLDivElement>(isOpen, onClose);
 
   if (!isOpen) return null;
 
@@ -103,7 +98,14 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-slate-900/60 backdrop-blur-xs overflow-y-auto">
+    <div
+      ref={dialogRef}
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="auth-modal-title"
+      tabIndex={-1}
+      className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-slate-900/60 backdrop-blur-xs overflow-y-auto focus:outline-none"
+    >
       <div className="bg-white w-full max-w-md rounded-3xl shadow-2xl border border-slate-100 overflow-hidden my-auto animate-in fade-in zoom-in-95 duration-200">
         {/* Header */}
         <div className="p-5 pb-4 border-b border-slate-100 flex items-start justify-between gap-3">
@@ -112,7 +114,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
               <UserPlus className="w-5 h-5" />
             </div>
             <div>
-              <h2 className="text-base font-extrabold text-slate-900 leading-tight">
+              <h2 id="auth-modal-title" className="text-base font-extrabold text-slate-900 leading-tight">
                 Crear Cuenta Comunitaria
               </h2>
               <p className="text-xs text-slate-500 mt-0.5">

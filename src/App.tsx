@@ -1,4 +1,5 @@
 import React, { Suspense, lazy, useEffect } from 'react';
+import { Analytics } from '@vercel/analytics/react';
 import { AppProvider, useApp } from './context/AppContext';
 import { Header } from './components/Header';
 import { BottomNav } from './components/BottomNav';
@@ -95,6 +96,8 @@ const AppContent: React.FC = () => {
       <CookieConsent />
       {/* Éxitos, errores y avisos (T7): región `aria-live="polite"`. */}
       <ToastRegion />
+      {/* Vercel Web Analytics */}
+      <Analytics />
     </div>
   );
 };

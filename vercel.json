@@ -15,9 +15,18 @@
       ],
       "destination": "https://www.ayudaencali.lat/$1",
       "permanent": true
+    },
+    {
+      "source": "/preguntas-frecuentes",
+      "destination": "/preguntas-frecuentes/",
+      "permanent": true
     }
   ],
   "rewrites": [
+    {
+      "source": "/preguntas-frecuentes/",
+      "destination": "/index.html?_orig=faq"
+    },
     {
       "source": "/api/v1/supabase/sql",
       "destination": "/api/sql?_orig=supabase/sql"

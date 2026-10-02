@@ -44,6 +44,11 @@ async function startServer(): Promise<void> {
     // pertenecen a los prefijos de Vite: /@, /__ , /src, /node_modules).
     app.use((req, res, next) => {
       if (req.method !== 'GET' && req.method !== 'HEAD') return next();
+      if (req.path === '/preguntas-frecuentes') {
+        res.redirect(308, '/preguntas-frecuentes/');
+        return;
+      }
+      if (req.path === '/preguntas-frecuentes/') return next();
       if (req.path === '/' || path.extname(req.path) !== '') return next();
       if (/^\/(@|__|api|src|node_modules|images)/.test(req.path)) return next();
       if (!req.accepts('html')) return next();
@@ -66,6 +71,11 @@ async function startServer(): Promise<void> {
   } else {
     const distDir = path.resolve(__dirname, 'dist');
 
+    app.get('/preguntas-frecuentes', (req, res, next) => {
+      if (req.path !== '/preguntas-frecuentes') return next();
+      res.redirect(308, '/preguntas-frecuentes/');
+    });
+
     // Assets con hash en el nombre: un año de caché e inmutables (si el
     // contenido cambia, cambia el nombre del archivo).
     app.use(
@@ -85,6 +95,12 @@ async function startServer(): Promise<void> {
         },
       }),
     );
+
+    app.get('/preguntas-frecuentes/', (_req, res) => {
+      res
+        .set('Cache-Control', 'no-cache, must-revalidate')
+        .sendFile(path.join(distDir, 'index.html'));
+    });
 
     // La app no tiene enrutador: toda URL distinta de «/» que no sea un archivo
     // es una página inexistente → 404 personalizada (no el shell de la SPA).

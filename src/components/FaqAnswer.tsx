@@ -44,9 +44,8 @@ const renderBlock = (block: FaqBlock, index: number, key: number): React.ReactNo
 
 /**
  * Respuesta completa de una pregunta, a partir de los bloques tipados de
- * `src/data/faq.ts`. Compartida por el modal y la sección indexable para que
- * ambos consumidores rendericen exactamente lo mismo (y lo mismo que el
- * JSON-LD de `index.html`).
+ * `src/data/faq.ts`. La página independiente y el JSON-LD de `index.html`
+ * consumen la misma fuente de preguntas y respuestas.
  */
 export const FaqAnswer: React.FC<{ item: FaqItem }> = ({ item }) => (
   <>

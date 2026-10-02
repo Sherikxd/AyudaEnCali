@@ -1,11 +1,9 @@
 import { useEffect, useRef, type RefObject } from 'react';
 
 /**
- * Patrón compartido de diálogo accesible (T13 · FAL-11).
- *
- * Extiende lo que ya hacía `FaqModal` (`role="dialog"` + `aria-modal` +
- * Escape) con las dos piezas que faltaban en `ReportModal` y
- * `LocationModal`:
+ * Patrón compartido de diálogo accesible (T13 · FAL-11):
+ * `role="dialog"` + `aria-modal`, Escape, foco atrapado y devuelto al cerrar.
+ * Se usa en `ReportModal` y `LocationModal`:
  *
  *  - **Escape cierra** el diálogo (se escucha a nivel de `document` para que
  *    funcione aunque el foco esté en un campo del formulario).

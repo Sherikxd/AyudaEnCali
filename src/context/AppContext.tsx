@@ -109,11 +109,6 @@ interface AppContextType {
    */
   needAlertsEnabled: boolean;
   setNeedAlertsEnabled: (enabled: boolean) => void;
-  /** Preguntas frecuentes: `section` despliega esa entrada concreta. */
-  isFaqOpen: boolean;
-  faqSection: string | null;
-  openFaq: (section?: string) => void;
-  closeFaq: () => void;
   /** Consentimiento de cookies (`null` = aún sin responder). */
   cookieConsent: CookieConsent | null;
   setCookieConsent: (value: CookieConsent) => void;
@@ -474,9 +469,6 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     setPendingWrite({ run: () => build(resumes), at: Date.now(), resumes });
   };
 
-  const [isFaqOpen, setIsFaqOpen] = useState(false);
-  const [faqSection, setFaqSection] = useState<string | null>(null);
-
   // `null` → la persona aún no respondió el banner de cookies.
   const [cookieConsent, setCookieConsentState] = useState<CookieConsent | null>(() => readConsent());
 
@@ -823,15 +815,6 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     }
     logger.warn(`No se pudo ${what}:`, error);
     notify(`No se pudo ${what}. Inténtalo de nuevo.`, 'error');
-  };
-
-  const openFaq = (section?: string) => {
-    setFaqSection(section ?? null);
-    setIsFaqOpen(true);
-  };
-  const closeFaq = () => {
-    setIsFaqOpen(false);
-    setFaqSection(null);
   };
 
   /**
@@ -2090,8 +2073,6 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   const closeAuthModalStable = useStableCallback(closeAuthModal);
   const completeAuthModalStable = useStableCallback(completeAuthModal);
   const openAuthModalStable = useStableCallback(openAuthModal);
-  const openFaqStable = useStableCallback(openFaq);
-  const closeFaqStable = useStableCallback(closeFaq);
   const setCookieConsentStable = useStableCallback(setCookieConsent);
   const addHelpPointStable = useStableCallback(addHelpPoint);
   const addHelpNeedStable = useStableCallback(addHelpNeed);
@@ -2176,10 +2157,6 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       dismissToast,
       needAlertsEnabled,
       setNeedAlertsEnabled,
-      isFaqOpen,
-      faqSection,
-      openFaq: openFaqStable,
-      closeFaq: closeFaqStable,
       cookieConsent,
       setCookieConsent: setCookieConsentStable,
       serverStatus,
@@ -2232,10 +2209,6 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       dismissToast,
       needAlertsEnabled,
       setNeedAlertsEnabled,
-      isFaqOpen,
-      faqSection,
-      openFaqStable,
-      closeFaqStable,
       cookieConsent,
       setCookieConsentStable,
       serverStatus,

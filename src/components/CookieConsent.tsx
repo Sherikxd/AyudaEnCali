@@ -11,7 +11,7 @@ import { Cookie, ExternalLink } from 'lucide-react';
  * modales (z-50), para que nunca tape un diálogo abierto.
  */
 export const CookieConsent: React.FC = () => {
-  const { cookieConsent, setCookieConsent, openFaq } = useApp();
+  const { cookieConsent, setCookieConsent } = useApp();
 
   if (cookieConsent !== null) return null;
 
@@ -31,14 +31,13 @@ export const CookieConsent: React.FC = () => {
           <p>
             Las esenciales (sesión de acceso y seguridad) están siempre activas. Con tu permiso
             cargamos además recursos de terceros, hoy las tipografías de Google.{' '}
-            <button
-              type="button"
-              onClick={() => openFaq('cookies')}
+            <a
+              href="/preguntas-frecuentes/#cookies"
               className="inline-flex items-center gap-1 font-bold text-orange-700 hover:text-orange-800 underline underline-offset-2"
             >
               Ver detalles
               <ExternalLink className="w-3 h-3" />
-            </button>
+            </a>
           </p>
         </div>
 

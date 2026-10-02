@@ -274,13 +274,15 @@ opción `alt` no llega al DOM → texto accesible por `aria-label`.
 
 ### T37 · FAQ visible e indexable — **agente-frontend** · ✅ · depende de T35 → SEO-08, QW-03
 
-Sección `/#preguntas-frecuentes` en el flujo normal (no modal que devuelve
-`null`) con las 8 actuales + preguntas PAA de la investigación.
-**Hecho cuando:** las preguntas están en el DOM sin interactuar y casan
-con el JSON-LD de T35.
-✅ 2026-10-02: `src/components/FaqSection.tsx` montada en `App.tsx`
-(13 preguntas en `<details>`, siempre en el DOM, todas las pestañas);
-`FAQPage` de `index.html` = 13/13 idéntico a `buildFaqPageJsonLd()`.
+Página independiente `/preguntas-frecuentes/`, con las preguntas actuales y
+las PAA de la investigación; no se monta como sección en las pestañas ni como
+modal contextual.
+**Hecho cuando:** los enlaces abren la página dedicada, las preguntas están
+en el DOM sin interacción y casan con el JSON-LD de T35.
+✅ 2026-10-02: el FAQ se renderiza solo en `/preguntas-frecuentes/`, con
+metadatos canónicos propios, navegación de retorno, enlaces de cookies y
+respaldo offline. Se retiraron la sección global y el modal. `FAQPage` sigue
+sincronizado con `src/data/faq.ts`.
 
 ### T38 · Pestaña ↔ URL (pushState) + enlaces `<a>` — **agente-frontend** · ⛔ requiere decisión → SEO-05/12
 

@@ -11,7 +11,6 @@ export const Header: React.FC = () => {
     setReportModalType, 
     userProfile, 
     openAuthModal,
-    openFaq 
   } = useApp();
 
   const { isSignedIn, isLoaded } = useUser();
@@ -107,9 +106,9 @@ export const Header: React.FC = () => {
             )}
           </TabLink>
 
-          {/* Enlace de texto real (T36/T37): interlinking al FAQ indexable. */}
+          {/* Enlace de texto a la página independiente de preguntas frecuentes. */}
           <a
-            href="/#preguntas-frecuentes"
+            href="/preguntas-frecuentes/"
             className="transition-colors text-slate-500 hover:text-orange-600 focus:outline-none"
           >
             Preguntas frecuentes
@@ -119,15 +118,14 @@ export const Header: React.FC = () => {
         {/* Zone 3: 1-2 primary actions */}
         <div className="flex items-center gap-2.5">
           {/* Ayuda: preguntas frecuentes (visible también en móvil) */}
-          <button
-            type="button"
-            onClick={() => openFaq()}
+          <a
+            href="/preguntas-frecuentes/"
             aria-label="Preguntas frecuentes"
             title="Preguntas frecuentes"
             className="w-9 h-9 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-600 hover:text-slate-900 flex items-center justify-center transition-colors shrink-0 focus:outline-none focus:ring-2 focus:ring-orange-500/30"
           >
             <HelpCircle className="w-4 h-4" />
-          </button>
+          </a>
 
           <a
             href="tel:123"

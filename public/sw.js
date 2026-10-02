@@ -35,7 +35,7 @@ const RUNTIME_CACHE = `${CACHE_PREFIX}runtime-${CACHE_VERSION}`;
  * aquí: se cachean en runtime con stale-while-revalidate, que sí actualiza la
  * copia en su propia caché al cambiar sin forzar un bump de versión.
  */
-const PRECACHE_URLS = ['/', '/404.html'];
+const PRECACHE_URLS = ['/', '/preguntas-frecuentes/', '/404.html'];
 
 /** Extrae los chunks con hash referenciados por el shell (`src`/`href`). */
 function extractAssets(html) {
@@ -114,9 +114,9 @@ async function navigateNetworkFirst(event, request, url) {
   try {
     const response = await fetch(request);
     // Refresca el shell precacheado para que la reserva offline no envejezca.
-    if (url.pathname === '/' && response.status === 200) {
+    if ((url.pathname === '/' || url.pathname === '/preguntas-frecuentes/') && response.status === 200) {
       const cache = await caches.open(SHELL_CACHE);
-      event.waitUntil(cache.put('/', response.clone()));
+      event.waitUntil(cache.put(url.pathname, response.clone()));
     }
     return response;
   } catch {
@@ -126,8 +126,8 @@ async function navigateNetworkFirst(event, request, url) {
 
 /** Reservas offline: el shell con aviso para `/`, 404 real para el resto. */
 async function offlineNavigation(url) {
-  if (url.pathname === '/') {
-    const shell = await caches.match('/');
+  if (url.pathname === '/' || url.pathname === '/preguntas-frecuentes/') {
+    const shell = await caches.match(url.pathname);
     if (shell) {
       const html = await shell.text();
       return new Response(withOfflineNotice(html), {

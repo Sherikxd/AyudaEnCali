@@ -672,7 +672,7 @@ try {
   // servidor (stub) manda el recuento real.
   globalThis.__testSession = { isSignedIn: true, userId: 'user_front_1', openSignInCalls: 0 };
   await act(async () => {
-    appCtx.openFaq(); // un cambio de estado cualquiera fuerza el re-render
+    appCtx.setNeedAlertsEnabled(true); // dispara la comprobación del cambio de sesión
   });
   await act(async () => {
     await new Promise((resolve) => setTimeout(resolve, 100));
@@ -687,7 +687,7 @@ try {
   // closeAuthModal: cancelar DESCARTA la cola (no debe publicarse después).
   globalThis.__testSession = { isSignedIn: false, userId: null, openSignInCalls: 0 };
   await act(async () => {
-    appCtx.closeFaq();
+    appCtx.setNeedAlertsEnabled(false);
   });
   await act(async () => {
     await new Promise((resolve) => setTimeout(resolve, 50));
@@ -702,7 +702,7 @@ try {
   });
   globalThis.__testSession = { isSignedIn: true, userId: 'user_front_1', openSignInCalls: 0 };
   await act(async () => {
-    appCtx.openFaq();
+    appCtx.setNeedAlertsEnabled(true);
   });
   await act(async () => {
     await new Promise((resolve) => setTimeout(resolve, 100));

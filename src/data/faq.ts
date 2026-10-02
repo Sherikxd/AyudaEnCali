@@ -4,10 +4,8 @@
  * Las preguntas y respuestas viven aquí como **datos tipados** (nada de JSX)
  * para que tres consumidores distintos las rendericen sin duplicar texto:
  *
- * 1. `src/components/FaqModal.tsx` — el modal de ayuda contextual.
- * 2. `src/components/FaqSection.tsx` — la sección siempre presente en el DOM
- *    (indexable, `/#preguntas-frecuentes`).
- * 3. El bloque `FAQPage` de JSON-LD de `index.html` (estático, en el `<head>`),
+ * 1. `src/components/FaqPage.tsx` — la página independiente de preguntas.
+ * 2. El bloque `FAQPage` de JSON-LD de `index.html` (estático, en el `<head>`),
  *    que se genera con {@link buildFaqPageJsonLd}.
  *
  * ## Regla de sincronía (importante)

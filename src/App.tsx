@@ -7,12 +7,11 @@ import { ClerkSync } from './components/ClerkSync';
 import { ReportModal } from './components/ReportModal';
 import { LocationModal } from './components/LocationModal';
 import { AuthModal } from './components/AuthModal';
-import { FaqModal } from './components/FaqModal';
-import { FaqSection } from './components/FaqSection';
+import { FaqPage } from './components/FaqPage';
 import { CookieConsent } from './components/CookieConsent';
 import { TabLink } from './components/TabLink';
 import { ToastRegion } from './components/Toast';
-import { PAGE_META, updatePageMeta } from './utils/seo';
+import { FAQ_PAGE_META, PAGE_META, updatePageMeta } from './utils/seo';
 
 // Code splitting por pestaña: solo se descarga la vista que el usuario abre
 // (Leaflet, por ejemplo, solo viaja con la vista del mapa).
@@ -20,6 +19,10 @@ const MapView = lazy(() => import('./components/MapView').then((m) => ({ default
 const BlogView = lazy(() => import('./components/BlogView').then((m) => ({ default: m.BlogView })));
 const ChatView = lazy(() => import('./components/ChatView').then((m) => ({ default: m.ChatView })));
 const ProfileView = lazy(() => import('./components/ProfileView').then((m) => ({ default: m.ProfileView })));
+const FAQ_PATH = '/preguntas-frecuentes';
+
+const isFaqPath = (pathname: string): boolean =>
+  pathname === FAQ_PATH || pathname === `${FAQ_PATH}/`;
 
 const ViewFallback: React.FC = () => (
   <div className="min-h-[60vh] flex items-center justify-center">
@@ -40,35 +43,26 @@ const AppContent: React.FC = () => {
     closeAuthModal,
     completeAuthModal,
     authModalMessage,
-    isFaqOpen,
-    closeFaq,
-    faqSection,
-    openFaq,
   } = useApp();
 
-  // Sin enrutador (decisión 2026-09-29), el `<title>` y las metadatos de
-  // compartir van detrás de la pestaña visible; desde T38 esa pestaña tiene
-  // además su hash en la URL (`#mapa`, `#tablon`, `#asistente`, `#perfil`).
-  useEffect(() => {
-    updatePageMeta(PAGE_META[activeTab]);
-  }, [activeTab]);
+  const isFaqPage = isFaqPath(window.location.pathname);
 
-  // Enlace profundo `/#preguntas-frecuentes` (lo usa la página 404): abre el
-  // modal una sola vez y limpia el hash para no reabrirlo en re-renderizaciones.
-  // NO es un hash de pestaña: `AppContext` lo deja pasar sin cambiar la vista.
-  // Al cerrarlo, el usuario queda sobre la sección (T37), así que además
-  // scrollamos: en la carga inicial el navegador no llega a anclarse porque la
-  // sección se pinta después del parseo del shell.
+  // Sin enrutador, las pestañas siguen usando hash y el FAQ tiene una ruta
+  // propia para no aparecer como una sección repetida en cada vista.
   useEffect(() => {
-    if (window.location.hash !== '#preguntas-frecuentes') return;
-    openFaq();
-    window.history.replaceState(null, '', window.location.pathname);
-    document
-      .getElementById('preguntas-frecuentes')
-      ?.scrollIntoView?.({ block: 'start' });
-    // Se ejecuta solo al montar, sobre el `openFaq` de la primera pasada.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    updatePageMeta(isFaqPage ? FAQ_PAGE_META : PAGE_META[activeTab]);
+  }, [activeTab, isFaqPage]);
+
+  if (isFaqPage) {
+    return (
+      <div className="min-h-screen bg-slate-50 text-slate-900 font-sans">
+        <FaqPage />
+        <CookieConsent />
+        <ToastRegion />
+        <Analytics />
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-white text-slate-900 flex flex-col font-sans selection:bg-orange-500 selection:text-white">
@@ -84,10 +78,6 @@ const AppContent: React.FC = () => {
           {activeTab === 'profile' && <ProfileView />}
         </Suspense>
 
-        {/* FAQ pública en el flujo normal, visible en todas las pestañas. El
-            shell estático de index.html conserva una versión útil sin JS; el
-            modal (`FaqModal`) sigue siendo la ayuda contextual. */}
-        <FaqSection />
       </main>
 
       {/* Navegación por texto en el pie; los hashes comparten estados de la
@@ -130,7 +120,7 @@ const AppContent: React.FC = () => {
               Mi perfil
             </TabLink>
             <a
-              href="/#preguntas-frecuentes"
+              href="/preguntas-frecuentes/"
               className="font-semibold text-slate-600 hover:text-orange-600 transition-colors"
             >
               Preguntas frecuentes
@@ -172,8 +162,6 @@ const AppContent: React.FC = () => {
         onDismiss={completeAuthModal}
         titleMessage={authModalMessage}
       />
-      {/* Ayuda contextual (abre en la sección pedida, p. ej. «cookies»). */}
-      <FaqModal isOpen={isFaqOpen} onClose={closeFaq} initialSection={faqSection} />
       {/* Consentimiento de cookies: solo aparece hasta que se responde. */}
       <CookieConsent />
       {/* Éxitos, errores y avisos (T7): región `aria-live="polite"`. */}

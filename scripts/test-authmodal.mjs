@@ -265,10 +265,19 @@ try {
 
   /* ------------- 13. Cableado de FAQ, cookies, SEO, 404 y rendimiento ----- */
   check(
-    'App.tsx importa y monta FaqModal',
-    /import \{ FaqModal \} from '\.\/components\/FaqModal'/.test(appSource) &&
-      /<FaqModal[\s\S]*?isOpen=\{isFaqOpen\}/.test(appSource) &&
-      /initialSection=\{faqSection\}/.test(appSource),
+    'FAQ se muestra como página independiente y no en el flujo de las pestañas',
+    /import \{ FaqPage \} from '\.\/components\/FaqPage'/.test(appSource) &&
+      /isFaqPath\(window\.location\.pathname\)/.test(appSource) &&
+      /if \(isFaqPage\) \{[\s\S]*?<FaqPage \/>/.test(appSource) &&
+      !/FaqSection|FaqModal/.test(appSource),
+  );
+  const faqPageSource = readFileSync(`${root}/src/components/FaqPage.tsx`, 'utf8');
+  check(
+    'la página FAQ contiene el acordeón completo y enfoca enlaces a secciones',
+    /ALL_FAQ_ITEMS\.map/.test(faqPageSource) &&
+      /id=\{item\.id\}/.test(faqPageSource) &&
+      /scrollIntoView\(\{ block: 'start' \}\)/.test(faqPageSource) &&
+      /setCookieConsent\('essential'\)/.test(faqPageSource),
   );
   check(
     'App.tsx monta el banner de cookies',
@@ -276,12 +285,12 @@ try {
       /<CookieConsent \/>/.test(appSource),
   );
   check(
-    'App.tsx actualiza título y metadatos al cambiar de pestaña',
-    /updatePageMeta\(PAGE_META\[activeTab\]\)/.test(appSource),
+    'App.tsx actualiza metadatos de las vistas y de la página de FAQ',
+    /updatePageMeta\(isFaqPage \? FAQ_PAGE_META : PAGE_META\[activeTab\]\)/.test(appSource),
   );
   check(
-    'App.tsx abre el FAQ desde el enlace #preguntas-frecuentes',
-    /window\.location\.hash !== '#preguntas-frecuentes'/.test(appSource) && /openFaq\(\)/.test(appSource),
+    'los enlaces de la app apuntan a la ruta independiente del FAQ',
+    /href="\/preguntas-frecuentes\/"/.test(appSource),
   );
 
   const mainSource = readFileSync(`${root}/src/main.tsx`, 'utf8');
@@ -307,10 +316,11 @@ try {
     `canonical=${canonicalUrl} og:url=${openGraphUrl}`,
   );
   check(
-    'robots.txt y sitemap.xml publican el host canónico y solo la raíz indexable',
+    'robots.txt y sitemap.xml publican el host canónico, la raíz y el FAQ independiente',
     robotsTxt.includes(`Sitemap: ${seoModule.SITE_URL}sitemap.xml`) &&
       sitemapXml.includes(`<loc>${seoModule.SITE_URL}</loc>`) &&
-      (sitemapXml.match(/<url>/g) ?? []).length === 1,
+      sitemapXml.includes(`<loc>${seoModule.SITE_URL}preguntas-frecuentes/</loc>`) &&
+      (sitemapXml.match(/<url>/g) ?? []).length === 2,
   );
   check(
     'WebSite y Organization están relacionados sin anunciar una búsqueda inexistente',
@@ -323,9 +333,10 @@ try {
     JSON.stringify(faqJsonLd) === JSON.stringify(faqModule.buildFaqPageJsonLd()),
   );
   check(
-    'el shell HTML ofrece contenido público útil sin ejecutar JavaScript',
+    'el shell del mapa enlaza al FAQ y no duplica sus contenidos',
     /<h1[\s\S]*?Centros de acopio y albergues en Cali/.test(indexHtml) &&
-      /id="preguntas-frecuentes"/.test(indexHtml) &&
+      /href="\/preguntas-frecuentes\/"/.test(indexHtml) &&
+      !/id="preguntas-frecuentes"/.test(indexHtml) &&
       /href="tel:123"/.test(indexHtml),
   );
   check(
@@ -341,7 +352,7 @@ try {
   const notFoundPage = readFileSync(`${root}/public/404.html`, 'utf8');
   check(
     'la 404 se marca noindex y enlaza al FAQ',
-    /noindex/.test(notFoundPage) && /#preguntas-frecuentes/.test(notFoundPage),
+    /noindex/.test(notFoundPage) && /\/preguntas-frecuentes\//.test(notFoundPage),
   );
 
   const serverSource = readFileSync(`${root}/server.ts`, 'utf8');
@@ -349,6 +360,10 @@ try {
   // debe ir ANTES de las rutas y solo fuera de Vercel (el borde ya comprime).
   const serverAppSource = readFileSync(`${root}/server/app.ts`, 'utf8');
   check('server.ts responde la 404 personalizada con estado 404', /status\(404\)/.test(serverSource) && /404\.html/.test(serverSource));
+  check(
+    'server.ts sirve el FAQ como ruta de página y conserva el 404 para las demás',
+    /\/preguntas-frecuentes\//.test(serverSource) && /sendFile\(path\.join\(distDir, 'index\.html'\)\)/.test(serverSource),
+  );
   check('server/app.ts comprime con gzip fuera de Vercel', /app\.use\(compression\(\)\)/.test(serverAppSource) && /process\.env\.VERCEL/.test(serverAppSource));
   check('server.ts cachea /assets como inmutable', /immutable: true/.test(serverSource));
 

@@ -31,7 +31,6 @@ export const ProfileView: React.FC = () => {
     userLocation,
     setIsLocationModalOpen,
     serverStatus,
-    openFaq,
     cookieConsent,
   } = useApp();
   // «Ver en el mapa»: acción del contexto de mapa (T12).
@@ -545,9 +544,8 @@ export const ProfileView: React.FC = () => {
 
       {/* Ayuda y privacidad: atajos al FAQ y a la configuración de cookies */}
       <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 mt-6 mb-4 bg-white rounded-3xl border border-slate-100 shadow-sm overflow-hidden divide-y divide-slate-100">
-        <button
-          type="button"
-          onClick={() => openFaq()}
+        <a
+          href="/preguntas-frecuentes/"
           className="w-full flex items-center gap-3 p-4 text-left hover:bg-slate-50 transition-colors"
         >
           <div className="w-9 h-9 rounded-xl bg-orange-50 text-orange-600 flex items-center justify-center shrink-0">
@@ -560,11 +558,10 @@ export const ProfileView: React.FC = () => {
             </p>
           </div>
           <ArrowRight className="w-4 h-4 text-slate-300 shrink-0" />
-        </button>
+        </a>
 
-        <button
-          type="button"
-          onClick={() => openFaq('cookies')}
+        <a
+          href="/preguntas-frecuentes/#cookies"
           className="w-full flex items-center gap-3 p-4 text-left hover:bg-slate-50 transition-colors"
         >
           <div className="w-9 h-9 rounded-xl bg-slate-100 text-slate-600 flex items-center justify-center shrink-0">
@@ -575,7 +572,7 @@ export const ProfileView: React.FC = () => {
             <p className="text-[11px] text-slate-500">{consentLabel}</p>
           </div>
           <ArrowRight className="w-4 h-4 text-slate-300 shrink-0" />
-        </button>
+        </a>
       </div>
     </div>
   );

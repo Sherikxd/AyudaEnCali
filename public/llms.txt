@@ -11,7 +11,7 @@
 - [AyudaEnCali](https://www.ayudaencali.lat/): mapa y tablón comunitario de ayuda
   para Santiago de Cali, mantenidos entre vecinos (cualquiera puede reportar un
   punto o una necesidad).
-- [Preguntas frecuentes](https://www.ayudaencali.lat/#preguntas-frecuentes): qué es
+- [Preguntas frecuentes](https://www.ayudaencali.lat/preguntas-frecuentes/): qué es
   la plataforma, cómo reportar un centro, cuentas y privacidad, líneas de
   emergencia y qué llevar a un albergue.
 - [Tablón de necesidades](https://www.ayudaencali.lat/): insumos que la comunidad
@@ -52,8 +52,7 @@
 
 ## Optional
 
-- La app es una SPA sin enrutador: hoy solo existe la URL raíz
-  [https://www.ayudaencali.lat/](https://www.ayudaencali.lat/); las demás rutas
-  responden 404 con `noindex`.
+- La app usa hashes para sus pestañas y publica el FAQ como página
+  independiente en `/preguntas-frecuentes/`; las demás rutas responden 404.
 - [Sitemap](https://www.ayudaencali.lat/sitemap.xml) ·
 [robots.txt](https://www.ayudaencali.lat/robots.txt)

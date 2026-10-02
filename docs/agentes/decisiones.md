@@ -155,3 +155,13 @@ versionadas conserva la respuesta histórica sin paginar.
 desincronizarían contratos y consumirían el límite Hobby).
 *Por qué:* permite adoptar `/api/v1` sin cambiar clientes ni elevar el coste
 operativo; una futura v2 podrá definir cambios separados.
+
+**2026-10-02 · El FAQ es una página independiente; las pestañas siguen con hash.**
+Las preguntas frecuentes viven en `/preguntas-frecuentes/` y no se repiten al
+final de las vistas de mapa, tablón, asistente y perfil ni se abren como modal.
+La ruta se sirve desde el mismo shell SPA, conserva el 404 para cualquier otra
+ruta desconocida y tiene una URL canónica propia.
+*Descartado:* convertir el FAQ en una quinta pestaña o cargarlo en todas las
+vistas (duplica contenido y hace más pesada la navegación).
+*Por qué:* permite compartir y enlazar una página completa sin introducir un
+router general para las pestañas existentes.

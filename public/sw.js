@@ -10,7 +10,7 @@
  *   responde la `404.html` cacheada con estado 404.
  * - `GET /api/config` → **network-first** (nunca sirve una clave pública de
  *   Clerk caducada; la caché solo se usa si no hay red).
- * - Resto de `GET /api/*` → **stale-while-revalidate**; solo respuestas 2xx
+ * - Resto de `GET /api/*` → **stale-while-revalidate**; solo respuestas HTTP 200
  *   almacenables. Nunca se interceptan POST/PATCH/PUT/DELETE: la cola
  *   offline `pendingWrite` de AppContext se encarga de esos fallos.
  * - `/assets/*` (nombres con hash, inmutables) → **cache-first**.
@@ -20,7 +20,7 @@
  *   de `src/utils/consent.ts`), `/api/supabase/*` (DDL) y cualquier petición
  *   con cabecera `Authorization` (datos con sesión, no se persisten).
  *
- * Solo cachea `GET` + mismo origen + respuestas 2xx sin `no-store`/`private`.
+ * Solo cachea `GET` + mismo origen + respuestas HTTP 200 sin `no-store`/`private`.
  */
 
 /** Versión de la caché: cámbiala en cada release que invalide el precache. */
@@ -44,11 +44,11 @@ function extractAssets(html) {
   return [...new Set(urls)];
 }
 
-/** Solo se persisten respuestas 2xx del mismo origen sin directivas de no caché. */
+/** Solo se persisten respuestas HTTP 200 del mismo origen sin directivas de no caché. */
 function isStorable(response) {
   if (!response || response.status !== 200 || response.type !== 'basic') return false;
   const cacheControl = response.headers.get('Cache-Control') ?? '';
-  return !/\b(no-store|private)\b/.test(cacheControl);
+  return !/\b(no-store|private)\b/i.test(cacheControl);
 }
 
 async function putIfStorable(cache, request, response) {

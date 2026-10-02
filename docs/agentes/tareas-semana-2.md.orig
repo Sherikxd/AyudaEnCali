@@ -564,13 +564,6 @@ Las coordenadas del cliente también se etiquetan como no verificadas; el
 fallback evita titular resultados por el barrio cuando seleccionó por GPS.
 Regresiones añadidas a `scripts/test-chat-context.mjs` y `scripts/test-nucleos.mjs`.
 
-**Hardening FEAT-07 (2026-10-02):** `validateChat` acepta solo barrios de
-`CALI_BARRIOS_DATA` y los canoniza (incluidas variantes sin tilde); un
-barrio arbitrario o con instrucciones se descarta antes del handler. El
-JSON del modelo separa `untrustedClientInput` de `directoryContext`, y el
-historial falsificado continúa como texto de usuario, nunca como turno del
-modelo. Regresión mínima en `scripts/test-chat-context.mjs`.
-
 ---
 
 ## agente-frontend — `src/**`, `index.html`
@@ -872,8 +865,7 @@ ejecutado (o su impedimento anotado, con responsable y fecha).
 handlers ni consumir nuevas funciones. Puntos, necesidades y comentarios
 mantienen la paginación común ya introducida por T3; los rewrites y smoke
 cubren también las rutas de ciclo de vida y moderación. Detalle en
-`memoria/34-api-v1.md`; verificación adicional HTTP y de compatibilidad en
-`memoria/38-api-v1-verificacion.md`.
+`memoria/34-api-v1.md`.
 
 ## Backlog (sin asignar)
 

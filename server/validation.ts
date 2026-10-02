@@ -8,6 +8,7 @@ import type {
 } from '../src/types/index.js';
 import type { HelpNeedWithAuthor, ReportEntityType } from './entities.js';
 import type { GeoPoint } from './geo.js';
+import { CALI_BARRIOS_DATA } from '../src/data/caliLocations.js';
 
 /**
  * Validación y saneamiento de los payloads que llegan por HTTP.
@@ -21,9 +22,10 @@ import type { GeoPoint } from './geo.js';
  *   aún los envían; el validador estricto llega con el cliente (T9).
  * - Se normalizan espacios y largos máximos para evitar basura en la BD.
  * - Los enums se comparan contra listas permitidas; en la creación, si no
- *   coincide, se usa un valor por defecto seguro; en una **actualización**
- *   (PATCH/PUT) un valor desconocido se **rechaza**, para no escribir por
- *   sorpresa un estado distinto del que pidió quien edita.
+ *   coincide, se usa un valor por defecto seguro. El estado inicial de una
+ *   necesidad lo fija el handler como `activa`; el cliente solo puede
+ *   cambiarlo en un PATCH autenticado y autorizado. En actualización, un
+ *   enum desconocido se rechaza en vez de corregirlo en silencio.
  */
 
 export type ValidationResult<T> = { ok: true; value: T } | { ok: false; errors: string[] };
@@ -65,7 +67,7 @@ export type PointDraft = Omit<
 
 export type NeedDraft = Omit<
   HelpNeedWithAuthor,
-  'id' | 'createdAt' | 'supportersCount' | 'authorId'
+  'id' | 'createdAt' | 'supportersCount' | 'authorId' | 'status'
 > & { id?: string };
 
 /**
@@ -76,7 +78,7 @@ export type NeedDraft = Omit<
  */
 export type NeedPatch = Partial<
   Pick<
-    NeedDraft,
+    HelpNeedWithAuthor,
     | 'title'
     | 'description'
     | 'category'
@@ -157,6 +159,19 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function text(value: unknown, max: number): string {
   if (typeof value !== 'string') return '';
   return value.replace(/\s+/g, ' ').trim().slice(0, max);
+}
+
+function normalizeNeighborhood(value: string): string {
+  return value.normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim().toLowerCase().replace(/\s+/g, ' ');
+}
+
+/** Acepta solo barrios conocidos de Cali; no pasa texto arbitrario al asistente. */
+function chatNeighborhood(value: unknown): string | undefined {
+  const candidate = text(value, LIMITS.barrio);
+  if (!candidate) return undefined;
+  return Object.values(CALI_BARRIOS_DATA).find(
+    ({ name }) => normalizeNeighborhood(name) === normalizeNeighborhood(candidate),
+  )?.name;
 }
 
 /** Texto con saltos de línea (descripciones, comentarios). */
@@ -305,7 +320,6 @@ export function validateNeed(raw: unknown): ValidationResult<NeedDraft> {
       contactName: text(raw.contactName, LIMITS.medium),
       contactPhone: text(raw.contactPhone, 40),
       items: stringList(raw.items, 25, 120),
-      status: oneOf<NeedStatus>(raw.status, NEED_STATUSES, 'activa'),
       imageUrl: text(raw.imageUrl, 300),
     },
   };
@@ -612,7 +626,7 @@ export function validateChat(raw: unknown): ValidationResult<ChatDraft> {
   }
 
   const location = isRecord(raw.userLocation) ? raw.userLocation : undefined;
-  const barrio = location ? text(location.barrio, LIMITS.barrio) : '';
+  const barrio = location ? chatNeighborhood(location.barrio) : undefined;
 
   // FEAT-07: lat/lng opcionales. Un valor fuera de rango se ignora (nunca
   // rompe la conversación por una coordenada mala).
@@ -627,7 +641,7 @@ export function validateChat(raw: unknown): ValidationResult<ChatDraft> {
     ok: true,
     value: {
       message,
-      barrio: barrio || undefined,
+      barrio,
       coords,
       history,
     },

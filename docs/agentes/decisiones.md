@@ -144,3 +144,14 @@ resuelve a `.ts` en el typecheck, tsx la resuelve en local y Vite no toca
 `server/**`; coste: una regla fija para futuros imports — **siempre `.js`
 explícito en `api/` y `server/`** (los *type-only* no importan pero se
 dejan igual por coherencia).
+
+**2026-10-02 · `/api/v1` es un alias compatible, no una bifurcación.**
+Las rutas versionadas llaman a los mismos handlers que `/api`: Express monta
+el mismo router y Vercel reescribe cada alias a la función existente, con
+`_orig` preservando la ruta canónica. Los listados públicos comparten
+`page`, `limit` y metadatos; la omisión de parámetros en las rutas legacy y
+versionadas conserva la respuesta histórica sin paginar.
+*Descartado:* duplicar handlers o crear funciones de Vercel por versión (se
+desincronizarían contratos y consumirían el límite Hobby).
+*Por qué:* permite adoptar `/api/v1` sin cambiar clientes ni elevar el coste
+operativo; una futura v2 podrá definir cambios separados.

@@ -19,6 +19,58 @@
   ],
   "rewrites": [
     {
+      "source": "/api/v1/supabase/sql",
+      "destination": "/api/sql?_orig=supabase/sql"
+    },
+    {
+      "source": "/api/v1/support/mine",
+      "destination": "/api/support-mine?_orig=support/mine"
+    },
+    {
+      "source": "/api/v1/needs/:id/support",
+      "destination": "/api/needs-support?_orig=needs/:id/support&id=:id"
+    },
+    {
+      "source": "/api/v1/needs/:id",
+      "destination": "/api/needs?_orig=needs/:id&id=:id"
+    },
+    {
+      "source": "/api/v1/points/:id",
+      "destination": "/api/points?_orig=points/:id&id=:id"
+    },
+    {
+      "source": "/api/v1/reports",
+      "destination": "/api/comments?_orig=reports"
+    },
+    {
+      "source": "/api/v1/health",
+      "destination": "/api/health?_orig=health"
+    },
+    {
+      "source": "/api/v1/config",
+      "destination": "/api/config?_orig=config"
+    },
+    {
+      "source": "/api/v1/points",
+      "destination": "/api/points?_orig=points"
+    },
+    {
+      "source": "/api/v1/needs",
+      "destination": "/api/needs?_orig=needs"
+    },
+    {
+      "source": "/api/v1/comments",
+      "destination": "/api/comments?_orig=comments"
+    },
+    {
+      "source": "/api/v1/chat",
+      "destination": "/api/chat?_orig=chat"
+    },
+    {
+      "source": "/api/v1/:path*",
+      "destination": "/api/index?_orig=:path"
+    },
+    {
       "source": "/api/supabase/sql",
       "destination": "/api/sql?_orig=supabase/sql"
     },

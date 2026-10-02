@@ -10,8 +10,8 @@
  * disparar dos SELECT en cada pregunta.
  *
  * Solo **lee**: no toca `maybeVerifySchema` (nada de DDL desde el chat).
- * Si Supabase no responde se conserva la caché actual (la semilla) y se
- * reintenta antes de que venza el TTL: nunca rompe la respuesta.
+ * Si falla una consulta se conserva una última copia leída con éxito, pero
+ * una semilla local nunca se presenta como directorio real.
  */
 import { errorMessage, logger } from './logger.js';
 import { memory } from './store.js';
@@ -29,10 +29,22 @@ let nextAttemptAt = 0;
 
 /** Carga en curso (aunque pidan varias a la vez, solo hay una). */
 let inFlight: Promise<void> | null = null;
+let hasLivePoints = false;
+let hasLiveNeeds = false;
+
+export interface ChatContextAvailability {
+  points: boolean;
+  needs: boolean;
+}
+
+/** Indica qué tablas tienen una copia leída con éxito de Supabase. */
+export function getChatContextAvailability(): ChatContextAvailability {
+  return { points: hasLivePoints, needs: hasLiveNeeds };
+}
 
 async function loadContext(): Promise<void> {
   const client = getSupabaseClient();
-  if (!client) return; // sin configuración: la semilla sigue siendo el respaldo
+  if (!client) return; // sin configuración no hay contexto real disponible para el chat
 
   const [points, needs] = await Promise.all([
     withSupabaseRetry<HelpPointRow[]>('Supabase help_points (chat)', () =>
@@ -43,13 +55,15 @@ async function loadContext(): Promise<void> {
     ),
   ]);
 
-  // Mismo criterio que los GET: solo se sustituye la caché si la BD devolvió
-  // filas (una tabla vacía no borra lo que ya está en memoria).
-  if (!points.error && Array.isArray(points.data) && points.data.length > 0) {
+  // Una respuesta exitosa, incluso vacía, reemplaza la semilla/caché; una
+  // tabla vacía nunca debe hacer pasar datos de ejemplo por datos actuales.
+  if (!points.error && Array.isArray(points.data)) {
     memory.points = points.data.map(mapPointRow);
+    hasLivePoints = true;
   }
-  if (!needs.error && Array.isArray(needs.data) && needs.data.length > 0) {
+  if (!needs.error && Array.isArray(needs.data)) {
     memory.needs = needs.data.map(mapNeedRow);
+    hasLiveNeeds = true;
   }
 }
 

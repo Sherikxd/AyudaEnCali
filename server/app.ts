@@ -121,6 +121,10 @@ mount(api, '/comments', commentsHandler);
 mount(api, '/reports', reportsHandler);
 mount(api, '/chat', chatHandler);
 
+// API v1 aditiva: el mismo router conserva los contratos legacy sin duplicar
+// handlers ni variar autenticación, límites de tasa o respuestas.
+app.use('/api/v1', api);
+app.use('/api/v1', apiNotFound);
 app.use('/api', api);
 
 /* ------------------------- 404 y manejo de errores ------------------------- */

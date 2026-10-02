@@ -20,7 +20,7 @@ export const apiRobotsHeaders: RequestHandler = (_req: Request, res: Response, n
   next();
 };
 
-/** 404 consistente para rutas de API inexistentes (montado en `/api`). */
+/** 404 consistente para rutas de API inexistentes (montado en `/api` y `/api/v1`). */
 export const apiNotFound: RequestHandler = (req: Request, res: Response) => {
   res.status(404).json({ error: `Ruta no encontrada: ${req.method} ${req.path}` });
 };

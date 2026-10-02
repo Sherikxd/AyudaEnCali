@@ -361,6 +361,17 @@ try {
   const imagesCfg = readFileSync(`${root}/src/config/images.ts`, 'utf8');
   check('el cliente solo conoce el cloud name (sin secretos)', /res\.cloudinary\.com/.test(imagesCfg) && !/CLOUDINARY_URL|api_key|apiSecret/.test(imagesCfg));
   const blogSource = readFileSync(`${root}/src/components/BlogView.tsx`, 'utf8');
+  const needStatusOptions = blogSource.match(/const NEED_STATUS_OPTIONS:[\s\S]*?\];/)?.[0] ?? '';
+  const openNeedPredicate = blogSource.match(/const isOpenNeed = [\s\S]*?;/)?.[0] ?? '';
+  check(
+    'el ciclo de vida ofrece y etiqueta los cuatro estados',
+    ['activa', 'en_proceso', 'resuelta', 'archivada'].every((status) => needStatusOptions.includes(`value: '${status}'`)) &&
+      /NEED_STATUS_OPTIONS\.find/.test(blogSource) &&
+      /aria-label=\{`Estado de \$\{need\.title\}`\}/.test(blogSource) &&
+      openNeedPredicate.includes("need.status === 'activa'") &&
+      openNeedPredicate.includes("need.status === 'en_proceso'") &&
+      /Abiertas \(\{openCount\}\)/.test(blogSource),
+  );
   check('el héroe del tablón se sirve desde el CDN', /CDN_IMAGES\.blogHero/.test(blogSource));
   check('ningún componente apunta a un JPG local', !/src="\/images\/[^"]+\.jpg"/.test(blogSource));
 } catch (error) {

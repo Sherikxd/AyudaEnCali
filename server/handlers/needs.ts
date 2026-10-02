@@ -58,7 +58,8 @@ function isAuthor(authorId: string | undefined, userId: string): boolean {
  *
  * Orden: límite de tasa → sesión (401) → existencia (404) → autoría (403)
  * → validación estricta del parche (400). Un `status` fuera de
- * `activa|en_proceso|resuelta` se rechaza, no se corrige en silencio.
+ * `activa|en_proceso|resuelta|archivada` se rechaza, no se corrige en silencio.
+ * Al crear, el estado siempre nace `activa`.
  */
 async function lifecycle(
   input: ApiRequest,
@@ -199,9 +200,9 @@ export const needsHandler: ApiHandler = async (input, res) => {
       // `randomUUID()` evita las colisiones de `Date.now()` y el prefijo
       // `cali-need-` mantiene la compatibilidad con los IDs semilla.
       id: parsed.value.id ?? `cali-need-${randomUUID()}`,
-      // Estado del cuerpo ya validado (`activa|en_proceso|resuelta`) y
-      // recuento en cero: el primer apoyo real lo da la BD (T2).
-      status: parsed.value.status,
+      // El ciclo comienza activa; cambiarlo después exige autoría.
+      status: 'activa',
+      // El primer apoyo real lo da la BD (T2).
       supportersCount: 0,
       // La identidad sale SOLO del JWT: cualquier `authorId` del cuerpo se
       // ignora (decisión 2026-09-28).

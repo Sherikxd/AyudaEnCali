@@ -74,7 +74,7 @@ const jwk = {
 const b64 = (value) => Buffer.from(value).toString('base64url');
 
 /** JWT firmado por «Clerk» de prueba (RS256, kid conocido por el stub). */
-function mintJwt({ sub, expInSeconds = 300, tamper = false, role, publicMetadata }) {
+function mintJwt({ sub, expInSeconds = 300, tamper = false, role, publicMetadata, unsafeMetadata }) {
   const now = Math.floor(Date.now() / 1000);
   const header = { alg: 'RS256', typ: 'JWT', kid: 'test-nucleos-key' };
   const payload = {
@@ -91,6 +91,7 @@ function mintJwt({ sub, expInSeconds = 300, tamper = false, role, publicMetadata
   // igual que los dos caminos que lee `roleFromClaims` del servidor.
   if (role !== undefined) payload.role = role;
   if (publicMetadata !== undefined) payload.public_metadata = publicMetadata;
+  if (unsafeMetadata !== undefined) payload.unsafe_metadata = unsafeMetadata;
   const data = `${b64(JSON.stringify(header))}.${b64(JSON.stringify(payload))}`;
   let signature = cryptoSign('sha256', Buffer.from(data), privateKey);
   if (tamper) signature = Buffer.from(signature).reverse(); // firma basura
@@ -158,6 +159,14 @@ function supabaseStub(url, init) {
   if (url.includes('/rest/v1/help_needs')) {
     if (method === 'PATCH') return new Response(null, { status: 204 });
     if (method === 'POST') return new Response(null, { status: 201 });
+    return jsonResponse([]);
+  }
+
+  if (url.includes('/rest/v1/entity_reports')) {
+    const select = new URL(url).searchParams.get('select');
+    if (supabaseScenario === 'reports-read-down' && select === '*') {
+      return jsonResponse({ code: 'XX000', message: 'simulated report queue read failure' }, 500);
+    }
     return jsonResponse([]);
   }
 
@@ -386,12 +395,18 @@ try {
     method: 'POST',
     path: '/needs',
     headers: { authorization: `Bearer ${JWT_AUTHOR}` },
-    body: { id: 'nuc-test-1', title: 'Necesidad de prueba con JWT', barrio: 'El Poblado 2' },
+    body: {
+      id: 'nuc-test-1',
+      title: 'Necesidad de prueba con JWT',
+      barrio: 'El Poblado 2',
+      status: 'archivada',
+      authorId: 'user_nuc_attacker',
+    },
     clientIp: IP_NEEDS,
   });
   check(
-    'E2 POST con JWT de prueba → 201 y autoría solo del JWT',
-    e2.status === 201 && e2.body?.need?.id === 'nuc-test-1' && e2.body?.need?.authorId === 'user_nuc_author' && e2.body?.need?.supportersCount === 0,
+    'E2 POST ignora estado/autor falsificados y crea activa con autoría JWT',
+    e2.status === 201 && e2.body?.need?.id === 'nuc-test-1' && e2.body?.need?.authorId === 'user_nuc_author' && e2.body?.need?.supportersCount === 0 && e2.body?.need?.status === 'activa',
     `status=${e2.status} author=${e2.body?.need?.authorId}`,
   );
 
@@ -408,16 +423,43 @@ try {
     method: 'PATCH',
     path: '/needs/nuc-test-1',
     headers: { authorization: `Bearer ${JWT_AUTHOR}` },
+    body: { status: 'en_proceso' },
+    clientIp: IP_NEEDS,
+  });
+  check('E4 el autor puede pasar a en_proceso', e4.status === 200 && e4.body?.need?.status === 'en_proceso', `status=${e4.status}`);
+
+  const e4a = await call(needsHandler, {
+    method: 'PATCH',
+    path: '/needs/nuc-test-1',
+    headers: { authorization: `Bearer ${JWT_AUTHOR}` },
     body: { status: 'resuelta' },
     clientIp: IP_NEEDS,
   });
-  check('E4 el autor hace PATCH → 200 y el cambio persiste', e4.status === 200 && e4.body?.need?.status === 'resuelta', `status=${e4.status}`);
+  check('E4a el autor puede pasar a resuelta', e4a.status === 200 && e4a.body?.need?.status === 'resuelta', `status=${e4a.status}`);
+
+  const e4b = await call(needsHandler, {
+    method: 'PATCH',
+    path: '/needs/nuc-test-1',
+    headers: { authorization: `Bearer ${JWT_AUTHOR}` },
+    body: { status: 'archivada' },
+    clientIp: IP_NEEDS,
+  });
+  check('E4b el autor puede archivar sin borrar la necesidad', e4b.status === 200 && e4b.body?.need?.status === 'archivada', `status=${e4b.status}`);
+
+  const e4c = await call(needsHandler, {
+    method: 'PATCH',
+    path: '/needs/nuc-test-1',
+    headers: { authorization: `Bearer ${JWT_AUTHOR}` },
+    body: { status: 'activa' },
+    clientIp: IP_NEEDS,
+  });
+  check('E4c el autor puede restaurar una necesidad archivada', e4c.status === 200 && e4c.body?.need?.status === 'activa', `status=${e4c.status}`);
 
   const e5 = await call(needsHandler, {
     method: 'PATCH',
     path: '/needs/nuc-test-1',
     headers: { authorization: `Bearer ${JWT_OTHER}` },
-    body: { status: 'activa' },
+    body: { status: 'archivada' },
     clientIp: IP_NEEDS,
   });
   check('E5 otro usuario hace PATCH → 403 solo-autor', e5.status === 403 && sameText(e5.body?.error, 'Solo quien publicó la necesidad puede modificarla.'), `status=${e5.status}`);
@@ -689,10 +731,10 @@ try {
     method: 'POST',
     path: '/points',
     headers: AUTH_N,
-    body: { id: nPointId, name: 'Punto a moderar', lat: 3.45, lng: -76.55, address: 'Calle 9 # 1-2', barrio: 'El Poblado 2' },
+    body: { id: nPointId, name: 'Punto a moderar', lat: 3.45, lng: -76.55, address: 'Calle 9 # 1-2', barrio: 'El Poblado 2', verified: true, authorId: 'user_intruso', userRole: 'coordinador' },
     clientIp: IP_N,
   });
-  check('N0 semilla: POST /points crea el punto de la sección (201)', n0.status === 201 && n0.body?.point?.id === nPointId, `status=${n0.status}`);
+  check('N0 POST /points ignora verified y autor del cliente; los fija servidor/JWT', n0.status === 201 && n0.body?.point?.id === nPointId && n0.body?.point?.verified === false && n0.body?.point?.authorId === 'user_nuc_author', `status=${n0.status} point=${JSON.stringify(n0.body?.point)}`);
   const n0b = await call(needsHandler, {
     method: 'POST',
     path: '/needs',
@@ -718,6 +760,11 @@ try {
   const n2b = await call(pointsHandler, { method: 'PATCH', path: `/points/${nPointId}`, headers: AUTH_CIUDADANO_ROL, body: { verified: true }, clientIp: IP_N });
   check('N2b rol ciudadano EXPLÍCITO en el JWT → 403 (isModerator niega)', n2b.status === 403 && sameText(n2b.body?.error, SIN_MODERACION), `status=${n2b.status} ${JSON.stringify(n2b.body)}`);
 
+  const JWT_UNSAFE_MOD = mintJwt({ sub: 'user_nuc_unsafe_mod', unsafeMetadata: { role: 'coordinador' } });
+  const AUTH_UNSAFE_MOD = { authorization: `Bearer ${JWT_UNSAFE_MOD}` };
+  const n2c = await call(pointsHandler, { method: 'PATCH', path: `/points/${nPointId}`, headers: AUTH_UNSAFE_MOD, body: { verified: true }, clientIp: IP_N });
+  check('N2c unsafe_metadata.role en JWT NO concede moderación → 403', n2c.status === 403 && sameText(n2c.body?.error, SIN_MODERACION), `status=${n2c.status} ${JSON.stringify(n2c.body)}`);
+
   // El permiso se decide ANTES de mirar la entidad (orden T28: 401→403→404→400).
   const n3 = await call(pointsHandler, { method: 'PATCH', path: '/points/sin-punto-xyz', headers: AUTH_N, body: { verified: true }, clientIp: IP_N });
   check('N3 …y así el 403 sale antes que el 404 (no se filtran ids)', n3.status === 403 && sameText(n3.body?.error, SIN_MODERACION), `status=${n3.status}`);
@@ -736,6 +783,12 @@ try {
 
   const n8 = await call(pointsHandler, { method: 'PATCH', path: `/points/${nPointId}`, headers: AUTH_MOD, body: { verified: true }, clientIp: IP_N });
   check('N8 moderador marca verified → 200 y el punto queda verificado', n8.status === 200 && n8.body?.point?.id === nPointId && n8.body?.point?.verified === true, `status=${n8.status} verified=${n8.body?.point?.verified}`);
+
+  const n8b = await call(pointsHandler, { method: 'PUT', path: `/points/${nPointId}`, headers: AUTH_N, body: { name: 'Nombre editado después de verificar' }, clientIp: IP_N });
+  check('N8b editar un punto verificado revoca verified', n8b.status === 200 && n8b.body?.point?.name === 'Nombre editado después de verificar' && n8b.body?.point?.verified === false, `status=${n8b.status} verified=${n8b.body?.point?.verified}`);
+
+  const n8c = await call(pointsHandler, { method: 'PATCH', path: `/points/${nPointId}`, headers: AUTH_MOD, body: { verified: true }, clientIp: IP_N });
+  check('N8c moderador puede volver a verificar tras revisar cambios', n8c.status === 200 && n8c.body?.point?.verified === true, `status=${n8c.status} verified=${n8c.body?.point?.verified}`);
 
   const n9 = await call(pointsHandler, { method: 'PATCH', path: `/points/${nPointId}`, headers: AUTH_MOD, body: { verified: false }, clientIp: IP_N });
   check('N9 moderador desmarca verified → 200 y queda en false', n9.status === 200 && n9.body?.point?.verified === false, `status=${n9.status} verified=${n8.body?.point?.verified}`);
@@ -792,6 +845,9 @@ try {
 
   const gn2b = await call(reportsHandler, { path: '/reports', headers: AUTH_CIUDADANO_ROL, clientIp: IP_N });
   check('N21b rol ciudadano EXPLÍCITO en GET /reports → 403', gn2b.status === 403 && sameText(gn2b.body?.error, SIN_MODERACION), `status=${gn2b.status} ${JSON.stringify(gn2b.body)}`);
+
+  const gn2c = await call(reportsHandler, { path: '/reports', headers: AUTH_UNSAFE_MOD, clientIp: IP_N });
+  check('N21c unsafe_metadata.role en JWT NO abre la cola → 403', gn2c.status === 403 && sameText(gn2c.body?.error, SIN_MODERACION), `status=${gn2c.status} ${JSON.stringify(gn2c.body)}`);
 
   const gn3 = await call(reportsHandler, { path: '/reports', headers: AUTH_MOD, clientIp: IP_N });
   check('N22 GET /reports como moderador → 200 con la cola paginada', gn3.status === 200 && Array.isArray(gn3.body?.reports) && gn3.body.reports.length === 2 && gn3.body?.page === 1 && gn3.body?.limit === 20 && gn3.body?.total === 2 && gn3.body?.totalPages === 1 && gn3.body?.source === 'memory_cache', `status=${gn3.status} ${JSON.stringify(gn3.body)}`);
@@ -912,6 +968,27 @@ try {
     check(name, ok, `${detail} :: ${JSON.stringify(viaExpress.body)}`);
     return { viaExpress, viaVercel };
   }
+
+  async function comprobarAliasVersionado(name, path) {
+    const legacy = await callExpress({ path: `/api${path}` });
+    const versionado = await callExpress({ path: `/api/v1${path}` });
+    const iguales = legacy.status === versionado.status &&
+      JSON.stringify(legacy.body) === JSON.stringify(versionado.body);
+    check(
+      `${name}: /api y /api/v1 conservan status y cuerpo`,
+      iguales,
+      `legacy=${legacy.status} versionado=${versionado.status}`,
+    );
+  }
+
+  for (const recurso of ['points', 'needs', 'comments']) {
+    await comprobarAliasVersionado(`M API v1 ${recurso} sin paginación`, `/${recurso}`);
+    await comprobarAliasVersionado(
+      `M API v1 ${recurso} paginado`,
+      `/${recurso}?page=1&limit=2`,
+    );
+  }
+  await comprobarAliasVersionado('M API v1 mantiene el 404 legacy', '/no-existe');
 
   // Semilla de la sección: creada en caché (sin BD) para que los dos
   // adaptadores lean exactamente la misma fila en memoria.
@@ -1159,6 +1236,31 @@ try {
   process.env.SUPABASE_SERVICE_ROLE_KEY = 'test-service-role-key';
   initSupabase();
   check('M11 la fase «con BD» instala el cliente de Supabase', getSupabaseClient() !== null);
+
+  // La cola es crítica: con BD configurada, no debe contestar 200 con una
+  // caché parcial si Supabase falla (en Vercel cada instancia tiene su caché).
+  supabaseScenario = 'reports-read-down';
+  const mReportsRead = await call(reportsHandler, {
+    method: 'GET',
+    path: '/api/reports',
+    headers: AUTH_MOD,
+    clientIp: IP_M,
+  });
+  const REPORTS_UNAVAILABLE = 'No se pudo cargar la cola de reportes. Inténtalo de nuevo en unos segundos.';
+  check(
+    'M11b cola de reportes: fallo de Supabase configurado → 503, no éxito parcial',
+    mReportsRead.status === 503 && sameText(mReportsRead.body?.error, REPORTS_UNAVAILABLE),
+    `status=${mReportsRead.status} body=${JSON.stringify(mReportsRead.body)}`,
+  );
+  await contrato(
+    'M11c cola de reportes: 503 idéntico en Express y Vercel si falla la BD',
+    { method: 'GET', path: '/api/reports', vurl: '/api/comments?_orig=reports', headers: AUTH_MOD },
+    (r) =>
+      r.status === 503 && sameText(r.body?.error, REPORTS_UNAVAILABLE)
+        ? true
+        : `503 esperado, llegó ${r.status} ${JSON.stringify(r.body)}`,
+  );
+  supabaseScenario = 'down';
 
   const intactCount = contratoNeedRef()?.supportersCount;
   const m12 = await call(needsSupportHandler, {

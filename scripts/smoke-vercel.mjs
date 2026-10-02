@@ -105,8 +105,10 @@ function estatico(ok, descripcion) {
 const catchAll = rewrites.findIndex((r) => r.source === '/api/:path*');
 estatico(catchAll === rewrites.length - 1, 'el catch-all `/api/:path*` es el último rewrite');
 estatico(
-  rewrites.slice(0, -1).every((r) => !r.source.includes(':path*')),
-  'ningún rewrite específico usa el patrón del catch-all',
+  rewrites.slice(0, -1).every(
+    (r) => !r.source.includes(':path*') || r.source === '/api/v1/:path*',
+  ),
+  'solo el fallback versionado precede al catch-all general',
 );
 estatico(
   rewrites.every((r) => String(r.destination).includes('_orig=')),
@@ -151,6 +153,30 @@ estatico(
   'el rewrite de /api/reports llega a la función de comentarios con `_orig=reports` y antes del catch-all',
 );
 estatico(apiFiles.length <= 12, `${apiFiles.length} funciones ≤ 12 del plan Hobby`);
+const versionedAliases = [
+  ['/api/v1/health', '/api/health?_orig=health'],
+  ['/api/v1/config', '/api/config?_orig=config'],
+  ['/api/v1/supabase/sql', '/api/sql?_orig=supabase/sql'],
+  ['/api/v1/points', '/api/points?_orig=points'],
+  ['/api/v1/points/:id', '/api/points?_orig=points/:id&id=:id'],
+  ['/api/v1/needs', '/api/needs?_orig=needs'],
+  ['/api/v1/needs/:id', '/api/needs?_orig=needs/:id&id=:id'],
+  ['/api/v1/needs/:id/support', '/api/needs-support?_orig=needs/:id/support&id=:id'],
+  ['/api/v1/support/mine', '/api/support-mine?_orig=support/mine'],
+  ['/api/v1/comments', '/api/comments?_orig=comments'],
+  ['/api/v1/reports', '/api/comments?_orig=reports'],
+  ['/api/v1/chat', '/api/chat?_orig=chat'],
+];
+estatico(
+  versionedAliases.every(([source, destination]) =>
+    rewrites.some((r) => r.source === source && r.destination === destination),
+  ) &&
+    rewrites.some(
+      (r) => r.source === '/api/v1/:path*' && r.destination === '/api/index?_orig=:path',
+    ) &&
+    rewrites.findIndex((r) => r.source === '/api/v1/:path*') < catchAll,
+  'las rutas v1 reutilizan funciones existentes y el fallback v1 antecede al catch-all',
+);
 
 /* -------------------------------------------------------------------------- */
 /* 3) Servidor local con el enrutado de vercel.json                            */
@@ -321,6 +347,7 @@ const routedPointsId = resolveTarget('/api/points/XYZ')?.handler === handlers.ge
 // T28: `/api/reports` se reescribe a la función de comentarios (dispatch por
 // `_orig=reports`); si el rewrite no está, cae en el catch-all.
 const routedReports = resolveTarget('/api/reports')?.handler === handlers.get('/api/comments');
+const routedV1Support = resolveTarget('/api/v1/needs/XYZ/support')?.handler === handlers.get('/api/needs-support');
 
 /**
  * Caso adaptado al estado del `vercel.json`.
@@ -345,6 +372,56 @@ function casoCiclo(id, method, path, json, routed) {
 const casos = [
   // --- métodos correctos (rutas canónicas) ---
   { id: 'health', method: 'GET', path: '/api/health', status: 200, includes: ['"status"'] },
+  { id: 'health v1', method: 'GET', path: '/api/v1/health', status: 200, includes: ['"status"'] },
+  {
+    id: 'points v1 paginados',
+    method: 'GET',
+    path: '/api/v1/points?page=999&limit=10',
+    status: 200,
+    includes: ['"points"'],
+    check: (cuerpo) =>
+      cuerpo?.points?.length === 0 && cuerpo.page === 999 && cuerpo.limit === 10 &&
+      typeof cuerpo.total === 'number' && cuerpo.totalPages === Math.ceil(cuerpo.total / 10)
+        ? true
+        : 'la ruta v1 no conserva la paginación compartida',
+  },
+  {
+    id: 'needs v1 conserva page/limit',
+    method: 'GET',
+    path: '/api/v1/needs?page=1&limit=1',
+    status: 200,
+    check: (cuerpo) =>
+      Array.isArray(cuerpo?.needs) && cuerpo.page === 1 && cuerpo.limit === 1 &&
+      typeof cuerpo.total === 'number' && cuerpo.totalPages === Math.ceil(cuerpo.total / 1)
+        ? true
+        : 'la ruta v1 de necesidades no devuelve el contrato paginado',
+  },
+  {
+    id: 'comments v1 conserva filtros y paginación',
+    method: 'GET',
+    path: '/api/v1/comments?pointId=cali-point-missing&page=2&limit=3',
+    status: 200,
+    check: (cuerpo) =>
+      Array.isArray(cuerpo?.comments) && cuerpo.page === 2 && cuerpo.limit === 3 &&
+      typeof cuerpo.total === 'number' && cuerpo.totalPages === Math.ceil(cuerpo.total / 3)
+        ? true
+        : 'la ruta v1 de comentarios no conserva filtros/metadatos',
+  },
+  {
+    id: 'needs-support v1 conserva el id del rewrite',
+    method: 'POST',
+    path: '/api/v1/needs/XYZ/support',
+    json: {},
+    status: routedV1Support ? 401 : 404,
+    includes: routedV1Support ? ['Debes iniciar sesión'] : undefined,
+  },
+  {
+    id: 'ruta desconocida v1 → 404 con path sin versión',
+    method: 'GET',
+    path: '/api/v1/no-existe',
+    status: 404,
+    exactBody: { error: 'Ruta no encontrada: GET /no-existe' },
+  },
   {
     id: 'points',
     method: 'GET',

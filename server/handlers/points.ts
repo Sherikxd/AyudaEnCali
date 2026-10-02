@@ -173,11 +173,11 @@ async function lifecycle(
   const updated: HelpPoint = {
     ...point,
     ...patch,
-    // Ni el id ni la autoría cambian con una edición; `verified` es de
-    // moderación (T28) y no se lee del parche del autor.
+    // Una edición invalida la verificación: los datos relevantes para el
+    // directorio y la proximidad deben volver a moderarse.
     id: point.id,
     authorId: point.authorId,
-    verified: point.verified,
+    verified: false,
     createdAt: point.createdAt,
     updatedAt: now,
   };
@@ -188,7 +188,7 @@ async function lifecycle(
     const { error } = await withSupabaseRetry('Supabase update help_points', () =>
       client
         .from('help_points')
-        .update({ ...toPointPatchRow(patch), updated_at: now })
+        .update({ ...toPointPatchRow(patch), verified: false, updated_at: now })
         .eq('id', point.id),
     );
     if (error) {

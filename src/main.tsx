@@ -88,7 +88,9 @@ resolveClerkPublishableKey()
  */
 function registerServiceWorker(): void {
   navigator.serviceWorker
-    .register('/sw.js')
+    // Evita que el caché HTTP de estáticos de Express (7 días) retrase
+    // actualizaciones del worker; Vercel además sirve este recurso no-cache.
+    .register('/sw.js', { updateViaCache: 'none' })
     .then(() => logger.debug('Service Worker registrado.'))
     .catch((error: unknown) => logger.warn('No se pudo registrar el Service Worker.', error));
 }

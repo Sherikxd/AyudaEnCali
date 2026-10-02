@@ -195,7 +195,7 @@ que empiezan con `VITE_`.
 | `npm run lint` | Comprobación de tipos (`tsc --noEmit`, modo estricto) |
 | `npm run typecheck` | Alias exacto de `lint` |
 | `npm run test:ui` | Test interactivo del modal de registro en jsdom (sin navegador) |
-| `npm run smoke:vercel` | Humo de las 10 funciones de `api/` y de `vercel.json` (35 checks); con `SMOKE_BASE_URL` va contra un deploy real |
+| `npm run smoke:vercel` | Humo de las 10 funciones de `api/` y de `vercel.json` (60 checks); con `SMOKE_BASE_URL` va contra un deploy real |
 | `npm run verify:rls` | Valida `supabase/schema.sql` y sus políticas RLS en un Postgres desechable (requiere red) |
 | `npm run db:setup` | Crea/actualiza las tablas de Supabase con la Management API |
 | `npm run db:seed` | Carga los datos iniciales (5 puntos, 3 necesidades); idempotente |
@@ -211,7 +211,7 @@ Cinco comandos, todos ejecutables sin desplegar nada:
 | `npm run lint` (alias `typecheck`) | `tsc --noEmit` en modo estricto (`noUnusedLocals`/`noUnusedParameters`) | El primero: es el más rápido |
 | `npx vite build` | Que el bundle de producción compila (code splitting y `manualChunks`) | Vercel ejecuta exactamente este build |
 | `npm run test:ui` | El modal de registro montado en jsdom (`scripts/test-authmodal.mjs`) | Usa `node --env-file-if-exists=.env` (Node ≥ 22.9) |
-| `npm run smoke:vercel` | Importa las 10 funciones de `api/`, valida los `rewrites` de `vercel.json` y dispara la matriz de rutas (**35 checks**) | Hermético: fuerza `VERCEL=1` y **no** lee `.env`. Con `SMOKE_BASE_URL=…` prueba un deploy real |
+| `npm run smoke:vercel` | Importa las 10 funciones de `api/`, valida los `rewrites` de `vercel.json` y dispara la matriz de rutas (**60 checks**) | Hermético: fuerza `VERCEL=1` y **no** lee `.env`. Con `SMOKE_BASE_URL=…` prueba un deploy real |
 | `npm run verify:rls` | Aplica `supabase/schema.sql` dos veces en un Postgres desechable y comprueba quién lee, inserta y borra | Requiere red y binarios de PostgreSQL |
 
 **Pipeline** (`.github/workflows/ci.yml`, en cada *push*/*PR* a `main` y
@@ -235,38 +235,61 @@ poder detectar el cambio de `schema.sql`.
 
 ## API
 
-Todas las rutas viven bajo `/api`, validan su cuerpo y responden errores en
-formato `{ "error": string, "details"?: string[] }`.
+Todas las rutas están disponibles bajo `/api` y `/api/v1`; para usar la
+versión nueva, reemplaza el prefijo `/api` por `/api/v1` en cualquier ruta
+de la tabla. Es un alias aditivo hacia los mismos handlers: conserva métodos,
+autenticación, respuestas, límites y paginación, sin obligar a migrar a los
+clientes existentes. Los errores usan el formato
+`{ "error": string, "details"?: string[] }`.
 
-| Método | Ruta | Descripción |
+| Método | Ruta bajo `/api` (también `/api/v1`) | Descripción |
 | --- | --- | --- |
 | `GET` | `/api/health` | Salud del servicio |
-| `GET` | `/api/config` | Estado de integraciones (sin secretos): incluye `supabaseTablesReady` y `supabaseHint` |
-| `GET` | `/api/supabase/sql` | Esquema SQL (contenido de `supabase/schema.sql`). **Pública**: no exige sesión (el DDL es idempotente y no lleva datos ni claves) |
+| `GET` | `/api/config` | Estado de integraciones, sin secretos |
+| `GET` | `/api/supabase/sql` | DDL de `supabase/schema.sql`; requiere el token servidor `SQL_ADMIN_TOKEN` (401 si falta o no coincide) |
 | `GET` | `/api/points` | Centros de ayuda (Supabase o caché) |
-| `POST` | `/api/points` | Crea un punto (**exige sesión**; validado, `400` si no pasa) |
+| `POST` | `/api/points` | Crea un punto (exige sesión de Clerk) |
+| `PUT` · `DELETE` | `/api/points/:id` | Edita o elimina el punto (exige sesión y autoría) |
+| `PATCH` | `/api/points/:id` | Verifica o desverifica el punto (exige sesión y permiso de moderación) |
 | `GET` | `/api/needs` | Necesidades publicadas |
-| `POST` | `/api/needs` | Crea una necesidad (**exige sesión**) |
-| `POST` | `/api/needs/:id/support` | Apoya (`add`) o retira (`remove`) el apoyo. **Exige sesión** (`401`); `400` si `action` no es válida, `404` si no existe. Devuelve `{ success, count, supported }` |
-| `GET` | `/api/support/mine` | IDs de las necesidades que apoyó la cuenta actual. **Exige sesión** (`401`) |
-| `GET` | `/api/comments?pointId=` | Comentarios (de un punto o todos) |
-| `POST` | `/api/comments` | Publica un comentario (**exige sesión**) |
+| `POST` | `/api/needs` | Crea una necesidad (exige sesión de Clerk) |
+| `PATCH` · `DELETE` | `/api/needs/:id` | Edita o elimina la necesidad (exige sesión y autoría) |
+| `POST` | `/api/needs/:id/support` | Añade o retira un apoyo (exige sesión; devuelve `{ success, count, supported }`) |
+| `GET` | `/api/support/mine` | IDs de las necesidades apoyadas por la cuenta actual (exige sesión) |
+| `GET` | `/api/comments?pointId=` | Comentarios de un punto o todos |
+| `POST` | `/api/comments` | Publica un comentario (exige sesión de Clerk) |
+| `GET` | `/api/reports` | Cola de moderación paginada (exige sesión y permiso de moderación) |
+| `POST` | `/api/reports` | Reporta un punto o necesidad (exige sesión de Clerk) |
 | `POST` | `/api/chat` | Mensaje al asistente (Gemini o directorio local) |
+
+**Paginación:** `GET /api/points`, `/api/needs` y `/api/comments` aceptan
+`?page=&limit=`; se puede usar cualquiera de los dos parámetros. Si se envía
+uno, el otro toma su valor por defecto (`page=1`, `limit=20`); valores
+inválidos vuelven a esos defaults y `limit` se limita al rango 1–100. La
+respuesta conserva su array (`points`, `needs` o
+`comments`) y añade `page`, `limit`, `total` y `totalPages`. Sin parámetros,
+los tres listados conservan su respuesta completa histórica, sin metadatos,
+para no romper clientes. En comentarios se puede combinar la paginación con
+`pointId`. `GET /api/reports` usa los mismos parámetros y metadatos, pero
+siempre devuelve página (por defecto 1 de 20), porque es una cola de trabajo
+moderada, no un listado público. `/api/support/mine` es un recurso privado de
+IDs, consulta hasta 500 filas de Supabase y no acepta `page`/`limit`; no forma
+parte de los listados paginados.
 
 Límites: **15 req/min** en `/api/chat` y **60 req/min** por IP en las
 escrituras (cabeceras `RateLimit-*`, respuesta `429` al superarlo). En
 Vercel esos límites son **por función** (una cuenta por ruta, ver
 [Vercel](#vercel-plan-hobby-gratis)); en Express es una sola cuenta.
 
-**Rutas con sesión:** las marcadas como *exige sesión* —todas las
-escrituras (`POST /api/points`, `POST /api/needs`,
-`POST /api/needs/:id/support`, `POST /api/comments`) y
-`GET /api/support/mine`— reciben el token de Clerk en la cabecera
-`Authorization: Bearer <token>` (en el cliente, `useAuth().getToken()` de
-`@clerk/clerk-react`). El servidor lo verifica con `verifyToken` de
-`@clerk/backend` usando `CLERK_SECRET_KEY`; sin esa variable en el
-entorno, esas rutas responden `401` y dejan un aviso en el log. El ID del
-usuario nunca lo manda el cliente: sale del claim `sub` del JWT validado.
+**Autenticación:** las escrituras de puntos, necesidades, apoyos y comentarios,
+el ciclo de vida de puntos/necesidades, `GET /api/support/mine` y
+`POST /api/reports` requieren una sesión de Clerk. El cliente envía el token
+bearer obtenido con `useAuth().getToken()`; el servidor lo verifica con
+`verifyToken` de `@clerk/backend` usando `CLERK_SECRET_KEY`, y responde `401`
+si no está disponible. `GET /api/reports` además exige permiso de moderación.
+`GET /api/supabase/sql` usa el token independiente `SQL_ADMIN_TOKEN`, no una
+sesión de Clerk. La identidad del usuario sale del claim `sub` del JWT y nunca
+del cuerpo enviado por el cliente.
 
 Ejemplo (las escrituras exigen sesión: sin la cabecera `Authorization`
 responde `401`):
@@ -484,11 +507,13 @@ Express):
 | `chat.ts` | `POST /api/chat` | POST |
 | `index.ts` | cualquier otra `…/api/*` | → **404 JSON** |
 
-Los rewrites de `vercel.json` van de lo específico al catch-all
-(`/api/supabase/sql`, `/api/support/mine`, `/api/needs/:id/support`,
-`/api/:path*` → `/api/index`) y arrastran `_orig=<ruta canónica>` para que
-los mensajes `Ruta no encontrada:` sean idénticos a los de Express. El
-fichero `api/index.ts` **no** exporta la app Express (solo el 404).
+Los rewrites de `vercel.json` van de lo específico al catch-all: primero
+las rutas equivalentes bajo `/api/v1`, luego las rutas legacy (incluidos los
+ciclos de vida y reportes) y por último `/api/:path*` → `/api/index`. Todos
+arrastran `_orig=<ruta canónica>` para que los handlers compartidos reciban
+la misma ruta que en Express. El versionado reutiliza las funciones actuales,
+no añade funciones al límite de Hobby. El fichero `api/index.ts` **no**
+exporta la app Express (solo el 404).
 
 Pasos:
 
@@ -500,10 +525,9 @@ Pasos:
 3. Antes del primer deploy, en *Project → Settings → Environment Variables*
    añade las variables de la tabla de abajo.
 4. *Deploy* y comprueba el humo (o déjalo en manos del CI, ver abajo):
-   - `/api/health` → `200 {"status":"ok",…}`
+   - `/api/health` y `/api/v1/health` → `200 {"status":"ok",…}`
    - `/api/config` → `200` con `clerkPublishableKey`
-   - `/api/supabase/sql` → `200` (ruta de dos niveles: es la que obliga al
-     rewrite de `vercel.json`)
+   - `/api/supabase/sql` → `200` con el bearer de `SQL_ADMIN_TOKEN` (ruta de dos niveles: el rewrite de `vercel.json`)
    - `POST /api/needs/<id>/support` → `401` sin sesión (**no** `404`: comprueba
      que el rewrite entrega el `id`)
    - `/api/needs-support`, `/api/support-mine` → `404` en JSON (espejos
@@ -517,7 +541,7 @@ Pasos:
    con `details: {}`, y paridad de mensajes de error) está automatizado:
 
    ```bash
-   npm run smoke:vercel                 # humo hermético en local (35 checks)
+   npm run smoke:vercel                 # humo hermético en local (60 checks)
    SMOKE_BASE_URL=https://<app>.vercel.app npm run smoke:vercel   # cualquier deploy
    SMOKE_BASE_URL=https://ayuda-en-cali.vercel.app npm run smoke:vercel   # producción
    ```
@@ -539,6 +563,7 @@ Variables de entorno en Vercel (panel, *Environment Variables*):
 | `VITE_CLERK_PUBLISHABLE_KEY` | ✅ | ✅ | Clave pública de Clerk: **horneada en el bundle** (prefijo `VITE_`, se lee en `vite build`) y además la sirve `/api/config` en runtime |
 | `CLERK_SECRET_KEY` | – | ✅ | Solo servidor: verifica el JWT. Sin ella, apoyos y escrituras responden `401` |
 | `CLERK_PUBLISHABLE_KEY` | – | ✅ | Alias sin `VITE_` aceptado por `/api/config` si no está la otra |
+| `SQL_ADMIN_TOKEN` | – | Opcional | Protege `GET /api/supabase/sql`; solo se necesita para consultar el DDL |
 | `SUPABASE_URL` | – | ✅ | Proyecto Supabase. Sin él, la API responde desde la caché en memoria |
 | `SUPABASE_SERVICE_ROLE_KEY` | – | ✅ | Escrituras del servidor (nunca en el cliente) |
 | `SUPABASE_ANON_KEY` | – | ✅ | Respaldo si falta la de servicio |

@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { ApiHandler, ApiRequest, ApiResult, JsonResponder } from '../http.js';
 import { effectiveMethod, notFoundResult } from '../http.js';
+import { logger } from '../logger.js';
 import {
   MODERATION_FORBIDDEN,
   canModerate,
@@ -185,6 +186,15 @@ async function listReports(input: ApiRequest, res: JsonResponder): Promise<ApiRe
         },
       };
     }
+
+    // Con una BD configurada, una cola parcial en memoria ocultaría reportes
+    // persistidos en otras instancias (especialmente en funciones serverless).
+    // No convertir un fallo de lectura en una cola vacía con apariencia de éxito.
+    if (!error) logger.error('Supabase no devolvió una cola válida de entity_reports.');
+    return {
+      status: 503,
+      body: { error: 'No se pudo cargar la cola de reportes. Inténtalo de nuevo en unos segundos.' },
+    };
   }
 
   const reports = paginate(memory.reports, params);

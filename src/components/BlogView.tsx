@@ -1,7 +1,7 @@
 import React, { useState, useMemo } from 'react';
 import { useUser } from '@clerk/clerk-react';
 import { useApp } from '../context/AppContext';
-import { HelpCategory, HelpNeed, NeedUrgency } from '../types';
+import { HelpCategory, HelpNeed, NeedStatus, NeedUrgency } from '../types';
 import { BLOG_HERO_SRCSET, CDN_IMAGES } from '../config/images';
 import { barrioLabel, formatKm, needDistanceKm, sameBarrio } from '../utils/proximity';
 import { 
@@ -18,11 +18,19 @@ import {
   Pencil,
   Trash2,
   Archive,
-  ArchiveRestore,
-  RotateCcw,
   MapPin,
   BellRing,
 } from 'lucide-react';
+
+const NEED_STATUS_OPTIONS: ReadonlyArray<{ value: NeedStatus; label: string }> = [
+  { value: 'activa', label: 'Activa' },
+  { value: 'en_proceso', label: 'En proceso' },
+  { value: 'resuelta', label: 'Resuelta' },
+  { value: 'archivada', label: 'Archivada' },
+];
+
+const isOpenNeed = (need: HelpNeed): boolean =>
+  need.status === 'activa' || need.status === 'en_proceso';
 
 export const BlogView: React.FC = () => {
   const { 
@@ -82,11 +90,11 @@ export const BlogView: React.FC = () => {
       if (!matchSearch) return false;
 
       // Fuente de verdad: el `status` que devuelve el servidor (T10).
-      if (activeFilter === 'all') return need.status !== 'resuelta' && need.status !== 'archivada';
-      if (activeFilter === 'alta') return need.urgency === 'alta' && need.status !== 'resuelta' && need.status !== 'archivada';
+      if (activeFilter === 'all') return isOpenNeed(need);
+      if (activeFilter === 'alta') return need.urgency === 'alta' && isOpenNeed(need);
       if (activeFilter === 'resuelta') return need.status === 'resuelta';
       if (activeFilter === 'archivada') return need.status === 'archivada';
-      return need.category === activeFilter && need.status !== 'resuelta' && need.status !== 'archivada';
+      return need.category === activeFilter && isOpenNeed(need);
     });
   }, [helpNeeds, activeFilter, searchQuery]);
 
@@ -121,8 +129,8 @@ export const BlogView: React.FC = () => {
     return ranked.map((entry) => entry.need);
   }, [filteredNeeds, nearMe, userLocation, userProfile.barrio]);
 
-  const activeCount = useMemo(
-    () => helpNeeds.filter((n) => n.status !== 'resuelta' && n.status !== 'archivada').length,
+  const openCount = useMemo(
+    () => helpNeeds.filter(isOpenNeed).length,
     [helpNeeds],
   );
 
@@ -164,23 +172,11 @@ export const BlogView: React.FC = () => {
     }
   };
 
-  /** Cambia el estado de la necesidad (`resuelta` ⇄ `activa`). */
-  const toggleResolved = async (need: HelpNeed) => {
-    if (busyId) return;
+  const changeNeedStatus = async (need: HelpNeed, status: NeedStatus) => {
+    if (busyId || need.status === status) return;
     setBusyId(need.id);
     try {
-      await updateNeed(need.id, { status: need.status === 'resuelta' ? 'activa' : 'resuelta' });
-    } finally {
-      setBusyId(null);
-    }
-  };
-
-  /** Retira el reporte del tablón sin borrarlo (o lo devuelve). */
-  const toggleArchived = async (need: HelpNeed) => {
-    if (busyId) return;
-    setBusyId(need.id);
-    try {
-      await updateNeed(need.id, { status: need.status === 'archivada' ? 'activa' : 'archivada' });
+      await updateNeed(need.id, { status });
     } finally {
       setBusyId(null);
     }
@@ -305,7 +301,7 @@ export const BlogView: React.FC = () => {
                   : 'bg-slate-100 text-slate-600 hover:text-slate-900'
               }`}
             >
-              Activas ({activeCount})
+              Abiertas ({openCount})
             </button>
 
             <button
@@ -450,7 +446,14 @@ export const BlogView: React.FC = () => {
             </div>
           ) : (
             renderedNeeds.map((need) => {
-              const isResolved = need.status === 'resuelta';
+              const StatusIcon =
+                need.status === 'resuelta'
+                  ? CheckCircle2
+                  : need.status === 'archivada'
+                    ? Archive
+                    : need.status === 'en_proceso'
+                      ? Clock
+                      : null;
               // MEJ-02: distancia solo cuando el orden por cercanía está activo.
               const distanceKm = nearMe ? needDistanceKm(userLocation, need) : null;
               const isMyBarrio = nearMe && sameBarrio(need.barrio, userLocation?.barrio || userProfile.barrio);
@@ -543,14 +546,21 @@ export const BlogView: React.FC = () => {
                             </span>
                           </>
                         )}
-                        {isResolved && (
-                          <>
-                            <span aria-hidden="true">·</span>
-                            <span className="text-emerald-700 font-bold flex items-center gap-1">
-                              <CheckCircle2 className="w-3.5 h-3.5" /> Resuelto
-                            </span>
-                          </>
-                        )}
+                        <span aria-hidden="true">·</span>
+                        <span
+                          className={`font-bold flex items-center gap-1 ${
+                            need.status === 'resuelta'
+                              ? 'text-emerald-700'
+                              : need.status === 'archivada'
+                                ? 'text-slate-600'
+                                : need.status === 'en_proceso'
+                                  ? 'text-amber-700'
+                                  : 'text-sky-700'
+                          }`}
+                        >
+                          {StatusIcon && <StatusIcon className="w-3.5 h-3.5" aria-hidden="true" />}
+                          {NEED_STATUS_OPTIONS.find(({ value }) => value === need.status)?.label ?? 'Estado desconocido'}
+                        </span>
                       </div>
 
                       <h2 className="text-base md:text-lg font-bold text-slate-900 leading-snug">
@@ -750,43 +760,25 @@ export const BlogView: React.FC = () => {
                           <span>{editingId === need.id ? 'Cerrar edición' : 'Editar'}</span>
                         </button>
 
-                        <button
-                          type="button"
-                          onClick={() => void toggleResolved(need)}
-                          disabled={busyId === need.id}
-                          className="inline-flex items-center gap-1.5 text-xs font-semibold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 px-2.5 py-1.5 rounded-xl transition-colors disabled:opacity-50"
-                        >
-                          {need.status === 'resuelta' ? (
-                            <>
-                              <RotateCcw className="w-3.5 h-3.5" />
-                              <span>Reabrir</span>
-                            </>
-                          ) : (
-                            <>
-                              <CheckCircle2 className="w-3.5 h-3.5" />
-                              <span>Marcar resuelta</span>
-                            </>
-                          )}
-                        </button>
-
-                        <button
-                          type="button"
-                          onClick={() => void toggleArchived(need)}
-                          disabled={busyId === need.id}
-                          className="inline-flex items-center gap-1.5 text-xs font-semibold text-slate-600 bg-slate-100 hover:bg-slate-200 px-2.5 py-1.5 rounded-xl transition-colors disabled:opacity-50"
-                        >
-                          {need.status === 'archivada' ? (
-                            <>
-                              <ArchiveRestore className="w-3.5 h-3.5" />
-                              <span>Restaurar</span>
-                            </>
-                          ) : (
-                            <>
-                              <Archive className="w-3.5 h-3.5" />
-                              <span>Archivar</span>
-                            </>
-                          )}
-                        </button>
+                        <label className="inline-flex items-center gap-2 text-xs font-semibold text-slate-700">
+                          <span>Estado</span>
+                          <select
+                            aria-label={`Estado de ${need.title}`}
+                            value={need.status}
+                            disabled={busyId === need.id}
+                            onChange={(event) => {
+                              const option = NEED_STATUS_OPTIONS.find(
+                                ({ value }) => value === event.currentTarget.value,
+                              );
+                              if (option) void changeNeedStatus(need, option.value);
+                            }}
+                            className="rounded-lg border border-slate-200 bg-white px-2 py-1.5 disabled:opacity-50"
+                          >
+                            {NEED_STATUS_OPTIONS.map(({ value, label }) => (
+                              <option key={value} value={value}>{label}</option>
+                            ))}
+                          </select>
+                        </label>
 
                         {confirmingDeleteId === need.id ? (
                           <span className="inline-flex items-center gap-2 text-xs">

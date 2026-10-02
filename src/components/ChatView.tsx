@@ -184,7 +184,10 @@ export const ChatView: React.FC = () => {
             </div>
             <div>
               <div className="flex items-center gap-2">
-                <h2 className="text-sm font-bold text-slate-900">CaliSolidaria IA</h2>
+                <h1 className="text-sm font-bold text-slate-900">
+                  CaliSolidaria IA
+                  <span className="sr-only"> — asistente de emergencias en Cali</span>
+                </h1>
                 <span className="inline-flex items-center gap-1 text-[10px] font-bold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-full">
                   <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
                   En línea

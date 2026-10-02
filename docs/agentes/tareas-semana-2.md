@@ -42,9 +42,11 @@ Leyenda de estado: `⬜ pendiente` · `🟡 en curso` · `✅ hecha` · `⛔ blo
 | Calidad | T17, T18, T20 | ✅ · schema de `vercel.json` válido, CSP verificada con 0 violaciones | `memoria/21-calidad-infra.md` |
 | README infra | T19 | ✅ · FAL-14 corregido (`README.md` sincronizado) | `memoria/18-readme-infra.md` |
 | Agente pesado (Copilot) | rewrites de T2 en `vercel.json`, T5, T6, T8, T10, T12, T14 | ✅ · `test:server` 65/65, bug real de la cola `pendingWrite` destapado y arreglado | `memoria/22-copilot-profundo.md` |
-| **Pendientes** | T7 (moderación), T11 (semilla única, parte backend), T15 (PWA) | ⬜ T7/T15 · 🟡 T11 | — |
-| **T0** | verificación local ✅ (2026-10-01): `lint` · `vite build` · `test:ui` 40/40 · `test:server` 65/65 · `smoke:vercel` 43/43 · `verify:rls` n/a | 🟡 **falta el humo contra producción** (tras commit+push) | — |
+| **Pendientes** | T7→T28 moderación, T11→T29 semilla, T15→T30 PWA | ✅ las tres hechas (ver ronda objetivos) | `memoria/27`, `28`, `29` |
+| **T0** | puerta local 2026-10-02: `lint` ✅ · `vite build` ✅ · `test:ui` 40/40 ✅ · `test:server` ✅ (S1-S19) · `smoke:vercel` **51/51** ✅ · `verify:rls` **13 pasos** ✅ | 🟡 **falta el humo contra producción** (tras commit+push) | — |
 | **Ronda Copilot** (pensador) | T21-T26: BUG-01/02/03 + MEJ-01/02/03 | ✅ · `test:server` **84/84**, `smoke` 43/43, `lint` ✅ | `plan-copilot-2026-10-01.md`, `memoria/24`, `memoria/25` |
+| **Auditoría objetivos** (Copilot) | T27-T33 | ✅ T27 (**41/41 prod**) · T28 · T29 · T30 · T32 · ⛔ T31 (credenciales) · ⬜ T33 | `auditoria-objetivos-2026-10-01.md`, `memoria/27-29` |
+| **Ronda SEO** (3 agentes) | investigación → plan T34-T42 | ✅ 3 informes + plan · ✅ **Fase 1 ejecutada** (T34-T37 ∥ T39) · ⬜ T38/T40+ decisión | `seo/*`, `seo/plan-seo.md`, `memoria/31`, `memoria/32` |
 
 ---
 
@@ -103,6 +105,234 @@ El refresco solo corría con error/pendientes.
 **Hecho cuando:** suscripción optativa persistida en localStorage, sondeo
 acotado (75 s, GET existente) deduplicado por ID con aviso `Toast`, sin
 enviar coordenadas del navegador y sin funciones Vercel nuevas.
+
+---
+
+## Auditoría de objetivos (Copilot 2) — 2026-10-01 · OBJ-01..05 + T27-T33
+
+> Informe completo en
+> [`auditoria-objetivos-2026-10-01.md`](auditoria-objetivos-2026-10-01.md)
+> (con las notas de validación del coordinador). Objetivos:
+> **OBJ-01** producción validada de punta a punta · **OBJ-02** semana 2
+> cerrada (T7/T11/T15/T0) · **OBJ-03** dashboard con datos reales (S3) ·
+> **OBJ-04** moderación y confianza · **OBJ-05** backlog sin ampliar plan.
+> *Regla de oro del auditor: no abrir features nuevas hasta validar la
+> producción real.*
+
+### T27 · Humo oficial contra producción (T0 reubicado) — **agente-calidad** · ✅ · → OBJ-01
+
+`SMOKE_BASE_URL=https://ayuda-en-cali.vercel.app npm run smoke:vercel`.
+**Hecho cuando:** batería 100% en verde contra el deploy live, sin
+discrepancias 401/403/404/503 entre Express y Vercel. *Nota:* cierra los
+heredados P1-1/P1-2/KO-3/KO-4 con el deploy actual; repetir tras el
+commit+push del cambio de esta semana.
+
+**Resultado (2026-10-02):** ✅ **41 comprobaciones · 0 fallos** contra
+`https://ayuda-en-cali.vercel.app` → cierra P1-1, P1-2, KO-3 y KO-4.
+Pendiente repetir tras el push de la ronda T21-T33.
+
+### T28 · Verificación y moderación (T7 heredada) — **agente-backend** · ✅ · depende de T1/T2 → OBJ-02, OBJ-04
+
+`verified` real por rol, tabla `entity_reports` (RLS sin políticas),
+`POST/GET /api/reports` (401/403), UI de cola; montar en función existente
+(sin pasar de 12). **Hecho cuando:** punto `verified` solo con rol
+moderador; reportes con sesión; `verify:rls` ✅; ≤12 funciones.
+
+**Resultado (2026-10-02):** ✅ `PATCH /api/points/:id` (solo `verified`,
+401/403/404/400) · `POST /api/reports` (201, idempotente) ·
+`GET /api/reports` paginado (403 sin rol) · moderador = `coordinador` en el
+JWT (+`MODERATOR_USER_IDS`) · `entity_reports` con FK y RLS sin políticas ·
+rewrite en `vercel.json` (10/12 funciones) · `lint` ✅ · `test:server`
+**121/121** · `smoke` **46/46** · `verify:rls` **13 pasos** · sabotajes en
+rojo verificados. **Pendiente: la UI de cola (frontend)** — contrato en
+`memoria/27-moderacion.md`.
+
+### T29 · Semilla única (T11 heredada) — **agente-backend + agente-frontend** ✅ · → OBJ-02
+
+Unificar `server/seedData.ts` ↔ `src/data/initialData.ts` en una sola
+fuente de verdad y cuadrar contadores con `need_supporters`.
+**Hecho cuando:** `db:seed` y el front pintan lo mismo que producción.
+
+**Resultado (2026-10-02):** ✅ parte cliente en `memoria/20` (cabecera de
+`initialData.ts`); parte servidor en `memoria/28-backend-semilla-headers.md`:
+`server/seedData.ts` = copia verbatim de los 32 puntos / 6 necesidades / 4
+comentarios del front, con **paridad carácter a carácter garantizada por
+`test:server` S1–S4** (import literal imposible hoy: `initialData.ts:2` no
+lleva `.js` y `src/**` es del agente-frontend → deuda documentada);
+`need_supporters` siembra con reglas puras (`server/seedSupporters.ts`):
+contador = filas reales (`18/1/22/45/15/52` en la BD real, nunca inflado).
+`db:setup` (la BD real no tenía `author_id`) + `db:seed` ×2 idempotente.
+`test:server` **140/140** · `smoke` **51/51** · sabotajes en rojo verificados.
+
+### T30 · PWA offline (T15 heredada) — **agente-frontend** · ✅ · depende de T9/T12 → OBJ-02
+
+`manifest.webmanifest` + Service Worker (precache shell, SWR en GET,
+network-first en POST con la cola existente), respetando la 404 real.
+**Hecho cuando:** instalable, offline funcional y cola al volver.
+
+**Resultado (2026-10-02):** ✅ `public/manifest.webmanifest` (standalone,
+theme `#EA580C`, 6 iconos) + `public/sw.js` versionado (`CACHE_VERSION`,
+limpieza en `activate`) + iconos 192/512 y maskable generados desde el
+`favicon.svg`; `<link rel="manifest">` en `index.html` y registro en
+`src/main.tsx` **solo PROD + con soporte**. Estrategias: navegaciones
+**network-first** (con red manda el servidor → la **404 real no se rompe**;
+sin red: `/` → shell offline, otras rutas → `404.html` con estado 404) ·
+`GET /api/config` network-first (Clerk nunca caducada) · resto `GET /api/*`
+stale-while-revalidate · `/assets/*` cache-first · escrituras no
+interceptadas (cola `pendingWrite` existente). Fuera cross-origin,
+`/api/supabase/*` y Authorization. Verificado: `node --check` ✅ ·
+`vite build` genera `dist/sw.js` + `dist/manifest.webmanifest` ✅ ·
+`lint`/`test:ui` ✅ · fetch local de `/sw.js` y `/manifest` 200 ✅.
+**Deuda:** cabecera `no-cache` de `/sw.js` en `vercel.json` (área calidad).
+Log en `memoria/29-frontend-pwa.md`.
+
+### T31 · Export real al cluster + contrato de dashboard — **agente-backend** · ⛔ bloqueada (falta `S3_*` de la persona) → OBJ-03
+
+Validar `npm run export:s3` contra el bucket real, confirmar layout y
+`manifest.json`, bucket privado. **Hecho cuando:** exit 0 real y el
+dashboard lee el manifest sin interpretación manual.
+
+### T32 · Paridad de seguridad local/Docker — **agente-backend** · ✅ → OBJ-01, OBJ-02
+
+CSP y cabeceras también en `server/http.ts`/`middleware.ts` (hoy solo en
+`vercel.json`), reconfirmar `readLimiter`/`writeLimiter`/XFF.
+**Hecho cuando:** `curl -I` local muestra las mismas cabeceras y el humo
+sigue en verde.
+
+**Resultado (2026-10-02):** ✅ `server/http.ts` → `CONTENT_SECURITY_POLICY`
+(923 chars, copia textual del bloque `/` de `vercel.json`), `PERMISSIONS_POLICY`
+y `setSecurityHeaders` con las **5 cabeceras** de `vercel.json` + `COOP`
+(solo adaptador de API); Express (API **y** HTML local/Docker) y el adapter
+de funciones ya delegaban en esa función, sin tocar `middleware.ts`/
+`app.ts`/`vercel.ts`. Única relajación: `npm run dev` (`relaxCspForViteDev`,
+solo `script-src`/`connect-src`). `curl -I` local: CSP **idéntica byte a
+byte** (923) en `/` y `/api/health` + 5 cabeceras + COOP; `readLimiter` /
+`writeLimiter` / XFF reconfirmados (secciones D y S16). Tests nuevos
+`S12–S19` (Express por HTTP real) + 5 checks en `smoke:vercel`;
+sabotaje de CSP → rojo en ambas suites. Ver log en
+`memoria/28-backend-semilla-headers.md`.
+
+### T33 · Backlog (solo si hay capacidad, alcance corregido) — **agente-frontend + agente-backend** · ⬜ · → OBJ-05
+
+*Corregido por validación:* FEAT-08 y FEAT-04-locale ya están hechos
+(T25/T26). Quedan FEAT-03 landings, FEAT-06 API v1, FEAT-10 realtime,
+FEAT-12 métricas y notificaciones *push*. **No asignar hasta OBJ-01/02
+cerrados.**
+
+---
+
+## Ronda SEO — 2026-10-02 · T34-T42
+
+> Investigación con **3 agentes en paralelo** → informes en
+> [`seo/01-tecnico.md`](seo/01-tecnico.md) (SEO-01..18),
+> [`seo/02-keywords.md`](seo/02-keywords.md) (QW-01..10, huecos H1..H5),
+> [`seo/03-geo-ia.md`](seo/03-geo-ia.md) (GEO-01..10).
+> **Plan consolidado con asignación, fases y decisiones:**
+> [`seo/plan-seo.md`](seo/plan-seo.md) (aquí solo el estado).
+
+### T34 · Archivos base de rastreo (robots/sitemap/llms/favicon) — **agente-frontend** · 🟡 · → SEO-01/02/06, GEO-01/04/05, QW-01
+
+`public/robots.txt` (permite todos los crawlers según la decisión anotada en
+el propio archivo; difiere de la recomendación inicial GEO-01) · sitemap con
+solo la raíz canónica `https://www.ayudaencali.lat/` · `llms.txt` · favicon.
+**Hecho cuando:** los recursos responden 200 en producción y GSC/robots no
+reportan errores. ✅ 2026-10-02: los ficheros están en `public/` y llegan a
+`dist/`; el dominio raíz redirige a `www`. ⬜ Producción aún sirve 404 para
+`robots.txt`, `sitemap.xml` y `llms.txt` (revisado hoy); falta desplegar esta
+rama, comprobar los 200 y completar Search Console.
+
+### T35 · JSON-LD + shell indexable en `index.html` — **agente-frontend** · ✅ · → SEO-03/04/09/16, GEO-02/03
+
+`WebSite`+`Organization`+`FAQPage` (FAQ contrastado automáticamente con
+`src/data/faq.ts`; sin `SearchAction`, porque el sitio no implementa una
+búsqueda general) · HTML inicial con contenido útil sin JS · descripción
+alineada con la vista raíz · `lang="es-CO"`. `FAQPage` no garantiza resultados
+enriquecidos: Google los limita a sitios oficiales y de salud autorizados.
+**Hecho cuando:** Rich Results Test sin errores y un crawler sin JS ve
+contenido.
+✅ 2026-10-02: los 3 bloques parsean y el shell estático está en el
+`<body>`. *Decisión GEO-03:* **sin** `EmergencyService` (no somos
+entidad oficial); `FAQPage` se genera desde `src/data/faq.ts` con
+comando de regeneración documentado.
+
+### T36 · On-page por vista — **agente-frontend** · ✅ · → SEO-07/11/12/13/16, QW-02
+
+`<h1>` en MapView/ChatView · title/descripción del mapa reoptimizados ·
+`<footer>` con enlaces · `aria-current` · `seo.ts` completo · `srcset`/
+`fetchpriority` héroe · `alt` en marcadores Leaflet.
+**Hecho cuando:** cada vista tiene H1 y la navegación deja enlaces reales.
+✅ 2026-10-02: todas las descripciones ≤155 car., title del mapa 51 car.
+(marca + keyword exacta), `aria-current` en los 4 botones del header y
+enlaces de texto en header/pie. *Nota:* en marcadores `divIcon` la
+opción `alt` no llega al DOM → texto accesible por `aria-label`.
+
+### T37 · FAQ visible e indexable — **agente-frontend** · ✅ · depende de T35 → SEO-08, QW-03
+
+Sección `/#preguntas-frecuentes` en el flujo normal (no modal que devuelve
+`null`) con las 8 actuales + preguntas PAA de la investigación.
+**Hecho cuando:** las preguntas están en el DOM sin interactuar y casan
+con el JSON-LD de T35.
+✅ 2026-10-02: `src/components/FaqSection.tsx` montada en `App.tsx`
+(13 preguntas en `<details>`, siempre en el DOM, todas las pestañas);
+`FAQPage` de `index.html` = 13/13 idéntico a `buildFaqPageJsonLd()`.
+
+### T38 · Pestaña ↔ URL (pushState) + enlaces `<a>` — **agente-frontend** · ⛔ requiere decisión → SEO-05/12
+
+Sincronizar vista con URL **sin añadir router** (la decisión 2026-09-29 se
+mantiene). **Bloqueada** hasta luz verde: ver `seo/plan-seo.md` §4.1.
+
+### T39 · API sin indexar (`X-Robots-Tag`) — **agente-backend** · ✅ · → SEO-15
+
+`X-Robots-Tag: noindex` en `/api/*`. **Hecho cuando:** `curl -I
+/api/health` lo muestra y el humo sigue en verde.
+
+**Resultado (2026-10-02):** ✅ helper `setApiRobotsHeaders` en
+`server/http.ts` + montaje **solo** por prefijo `/api` (`server/app.ts`)
+y en `createApiRoute` (`server/vercel.ts`, cubre también `/api/reports`);
+`setSecurityHeaders` de T32 intacto (**el HTML `/` no la lleva** — guardas
+S20/S24). `curl -I`: `/api/health` 200+noindex, `/` 200 sin la cabecera ·
+`test:server` **146/146** (S20–S25) · `smoke` **53/53** · sabotaje → 3+1
+fallos y restaurado a verde. Log en `memoria/32-backend-xrobots.md`.
+
+### T40 · Landings keyword (FEAT-03 primer lote) — **agente-frontend** · ⬜ · bloqueada por T38 → QW-04..08, huecos H1/H2/H4
+
+`/emergencias-cali`, `/terremoto-cali`, 5 barrios,
+`/veterinarias-24-horas-cali`, `/donar-en-cali`, `/lluvias-cali` (antes de
+noviembre) · sello «actualizado el …» + `ItemList`.
+**Hecho cuando:** URL por keyword P1 viva y en el sitemap.
+
+### T41 · Baseline GEO + Search Console — **persona + coordinador** · ⬜ · → GEO-10
+
+Panel 10 preguntas × 5 motores **antes de tocar nada**, alta en Search
+Console + sitemap, canal GA4 IA. **Hecho cuando:** existe el «antes».
+
+### T42 · Entidad off-site (GBP/Wikidata/prensa) — **persona** · ⬜ · → QW-09, H5, GEO-08
+
+Google Business Profile, Wikidata con `official website`, prensa local
+(90minutos/Occidente/Pulzo), Reddit, directorios oficiales.
+
+### T43 · Integridad SEO tras revisión de fuentes — **coordinación** · ✅
+
+Canónica y OG unificadas con el host de producción `www` · sitemap sin
+`lastmod`/`changefreq`/`priority` no verificables · retirado `SearchAction`
+que apuntaba a una búsqueda inexistente · FAQ JSON-LD contrastado con la
+fuente TypeScript · shell estático mejorado · comentarios corregidos: los
+fragmentos no son páginas indexables. Pruebas locales: lint, build y test UI
+verdes. **Pendiente externo:** producción aún no tiene desplegados los
+archivos SEO nuevos; hacer deploy y repetir comprobaciones de T34/T39 y GSC.
+**Hecho cuando:** «AyudaEnCali» existe como entidad fuera del repo.
+
+### T43/T44 · Deuda SEO (prerender + `vercel.json`) — **frontend + calidad** · ⬜ · decisión
+
+Prerender del shell en build (T43) · redirect 308 del espejo + CSP en
+todas las rutas + no-cache de `/sw.js` (T44, `vercel.json` = área calidad).
+
+**Paralelismo:** Grupo 1 `T27 ∥ T28` (calidad/backend disjuntos) · Grupo 2
+`T29 ∥ T30 ∥ T32` · **Grupo SEO `T34→T35→T36` (frontend secuencial) ∥
+`T39` (backend)** · T37 tras la puerta · T38/T40 con decisión de la
+persona · T41/T42 en paralelo (persona, desde ya) · T31 al recibir
+credenciales · T33 al final.
+*Cadena crítica:* T27 → T28 → T31 → dashboard · T38 → T40 → T43.
 
 ---
 

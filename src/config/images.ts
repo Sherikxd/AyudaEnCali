@@ -20,9 +20,12 @@ const DELIVERY = `https://res.cloudinary.com/${CLOUD_NAME}/image/upload`;
 const deliver = (transformations: string, publicId: string): string =>
   `${DELIVERY}/${transformations}/${publicId}`;
 
+/** Imagen de fondo del héroe del tablón (misma `public_id` para todas las variantes). */
+const BLOG_HERO_ID = 'ayudaencali/cali_relief_banner';
+
 export const CDN_IMAGES = {
   /** Fondo panorámico del héroe del tablón (hasta 1600 px de ancho). */
-  blogHero: deliver('f_auto,q_auto,w_1600', 'ayudaencali/cali_relief_banner'),
+  blogHero: deliver('f_auto,q_auto,w_1600', BLOG_HERO_ID),
   /** Imagen de las tarjetas del tablón (hasta 900 px de ancho). */
   volunteerBoxes: deliver('f_auto,q_auto,w_900', 'ayudaencali/volunteer_aid_boxes'),
   vetAnimalCare: deliver('f_auto,q_auto,w_900', 'ayudaencali/vet_animal_care'),
@@ -33,6 +36,16 @@ export const CDN_IMAGES = {
    */
   og: deliver('c_fill,w_1200,h_630,f_jpg,q_auto', 'ayudaencali/og_ayudaencali'),
 } as const;
+
+/**
+ * Variantes de ancho del héroe del tablón para el atributo `srcset` (T36):
+ * el navegador elige la que mejor encaje con su pantalla en vez de bajar el
+ * original de 1600 px en un móvil. Los anchos cubren desde un teléfono
+ * estrecho hasta la imagen a tamaño completo (`sizes="100vw"`).
+ */
+export const BLOG_HERO_SRCSET: string = [640, 960, 1280, 1600]
+  .map((width) => `${deliver(`f_auto,q_auto,w_${width}`, BLOG_HERO_ID)} ${width}w`)
+  .join(', ');
 
 /**
  * Correspondencia local → CDN de los archivos de `public/images/`. La usa el

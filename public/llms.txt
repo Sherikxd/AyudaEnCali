@@ -1,0 +1,59 @@
+# AyudaEnCali
+
+> Plataforma comunitaria de emergencias de Santiago de Cali: mapa en vivo de
+> centros de ayuda (acopio, albergues, veterinarias y salud), tablón de
+> necesidades solidarias y asistente de IA que responde con esos mismos datos.
+> Servicio cívico, gratuito y de datos abiertos. **No sustituye a los
+> servicios oficiales: en una emergencia real llama al 123.**
+
+## Qué es
+
+- [AyudaEnCali](https://www.ayudaencali.lat/): mapa y tablón comunitario de ayuda
+  para Santiago de Cali, mantenidos entre vecinos (cualquiera puede reportar un
+  punto o una necesidad).
+- [Preguntas frecuentes](https://www.ayudaencali.lat/#preguntas-frecuentes): qué es
+  la plataforma, cómo reportar un centro, cuentas y privacidad, líneas de
+  emergencia y qué llevar a un albergue.
+- [Tablón de necesidades](https://www.ayudaencali.lat/): insumos que la comunidad
+  publica y pide (pestaña «Tablón» de la app).
+
+## Datos abiertos y API pública
+
+- [GET /api/points](https://www.ayudaencali.lat/api/points): puntos de ayuda
+  activos en Cali en JSON (categoría, barrio, coordenadas, teléfono). Público,
+  sin autenticación. Soporta paginación con `?page=` y `?limit=`.
+- [GET /api/needs](https://www.ayudaencali.lat/api/needs): necesidades publicadas
+  en el tablón, en JSON. Público, sin autenticación. Soporta paginación con
+  `?page=` y `?limit=`.
+- [GET /api/health](https://www.ayudaencali.lat/api/health): estado del servicio.
+- Los datos son comunitarios y no verificados uno a uno: indica siempre la
+  fecha de consulta al citarlos.
+
+## Emergencias oficiales de Cali (usa estas primero)
+
+- 123 — Emergencias unificadas (Policía, Ambulancia y Bomberos)
+- 119 — Cuerpo de Bomberos de Cali (incendios, rescates e inundaciones)
+- 132 — Cruz Roja Seccional Valle (urgencias médicas y socorro)
+- 144 — Defensa Civil Valle (desastres naturales y apoyo civil)
+- 125 — CRUE Valle, Centro Regulador de Urgencias Médicas
+- (602) 441 1525 — Zoonosis y Bienestar Animal Cali (fauna y rescate de animales)
+- [Alcaldía de Cali — sitio oficial](https://www.cali.gov.co/)
+- [Gestión del Riesgo — Alcaldía de Cali](https://www.cali.gov.co/gestiondelriesgo/)
+
+## Mapa y asistente
+
+- El **mapa** filtra por categoría y barrio y se localiza con GPS opcional; los
+  puntos se pueden consultar sin cuenta.
+- El asistente **CaliSolidaria IA** responde dudas sobre centros de ayuda y
+  teléfonos de emergencia usando los datos de esta misma plataforma. Se invoca
+  con `POST /api/chat` (no está pensado para crawlers) y sus respuestas **no
+  son contenido indexable**: para citar información, usa esta página, el FAQ y
+  la API pública.
+
+## Optional
+
+- La app es una SPA sin enrutador: hoy solo existe la URL raíz
+  [https://www.ayudaencali.lat/](https://www.ayudaencali.lat/); las demás rutas
+  responden 404 con `noindex`.
+- [Sitemap](https://www.ayudaencali.lat/sitemap.xml) ·
+[robots.txt](https://www.ayudaencali.lat/robots.txt)

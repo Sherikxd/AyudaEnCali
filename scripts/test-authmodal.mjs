@@ -288,6 +288,46 @@ try {
   check('main.tsx aplica el consentimiento de cookies al arrancar', /applyConsent\(readConsent\(\)\)/.test(mainSource));
 
   const indexHtml = readFileSync(`${root}/index.html`, 'utf8');
+  const seoModule = await vite.ssrLoadModule('/src/utils/seo.ts');
+  const faqModule = await vite.ssrLoadModule('/src/data/faq.ts');
+  const canonicalUrl = indexHtml.match(/<link rel="canonical" href="([^"]+)"/)?.[1];
+  const openGraphUrl = indexHtml.match(/<meta property="og:url" content="([^"]+)"/)?.[1];
+  const jsonLdBlocks = [...indexHtml.matchAll(/<script type="application\/ld\+json">([\s\S]*?)<\/script>/g)]
+    .map(([, json]) => JSON.parse(json));
+  const websiteJsonLd = jsonLdBlocks.find((block) => block['@type'] === 'WebSite');
+  const faqJsonLd = jsonLdBlocks.find((block) => block['@type'] === 'FAQPage');
+  const robotsTxt = readFileSync(`${root}/public/robots.txt`, 'utf8');
+  const sitemapXml = readFileSync(`${root}/public/sitemap.xml`, 'utf8');
+  check(
+    'la URL canónica, OG y la metadata inicial coinciden con el estado raíz',
+    canonicalUrl === seoModule.SITE_URL &&
+      openGraphUrl === seoModule.SITE_URL &&
+      indexHtml.includes(`<title>${seoModule.PAGE_META.map.title}</title>`) &&
+      indexHtml.includes(`content="${seoModule.PAGE_META.map.description}"`),
+    `canonical=${canonicalUrl} og:url=${openGraphUrl}`,
+  );
+  check(
+    'robots.txt y sitemap.xml publican el host canónico y solo la raíz indexable',
+    robotsTxt.includes(`Sitemap: ${seoModule.SITE_URL}sitemap.xml`) &&
+      sitemapXml.includes(`<loc>${seoModule.SITE_URL}</loc>`) &&
+      (sitemapXml.match(/<url>/g) ?? []).length === 1,
+  );
+  check(
+    'WebSite y Organization están relacionados sin anunciar una búsqueda inexistente',
+    websiteJsonLd?.publisher?.['@id'] === 'https://www.ayudaencali.lat/#organization' &&
+      jsonLdBlocks.some((block) => block['@type'] === 'Organization') &&
+      !JSON.stringify(websiteJsonLd).includes('SearchAction'),
+  );
+  check(
+    'FAQPage JSON-LD coincide con las preguntas y respuestas visibles',
+    JSON.stringify(faqJsonLd) === JSON.stringify(faqModule.buildFaqPageJsonLd()),
+  );
+  check(
+    'el shell HTML ofrece contenido público útil sin ejecutar JavaScript',
+    /<h1[\s\S]*?Centros de acopio y albergues en Cali/.test(indexHtml) &&
+      /id="preguntas-frecuentes"/.test(indexHtml) &&
+      /href="tel:123"/.test(indexHtml),
+  );
   check(
     'index.html tiene og:image y twitter:image para la vista previa',
     /property="og:image"/.test(indexHtml) && /name="twitter:image"/.test(indexHtml),

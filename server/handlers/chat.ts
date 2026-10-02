@@ -199,8 +199,8 @@ export const chatHandler: ApiHandler = async (input, res) => {
   const { message, barrio, coords, history } = parsed.value;
 
   // Contexto al día ANTES de armar las instrucciones: sin este paso el
-  // asistente anunciaría la semilla (3 necesidades, 5 puntos) aunque la BD
-  // tenga datos reales o esté recién poblada (P1 de la T12).
+  // asistente anunciaría la semilla local aunque la BD tenga datos reales
+  // o esté recién poblada (P1 de la T12).
   await ensureContextFresh();
 
   const systemInstruction = buildSystemInstruction({ barrio, coords });

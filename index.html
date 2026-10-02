@@ -1,26 +1,30 @@
 <!doctype html>
-<html lang="es">
+<html lang="es-CO">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>AyudaEnCali — Red de ayuda y emergencias de Cali</title>
+    <title>Centros de acopio y albergues en Cali | AyudaEnCali</title>
     <meta
       name="description"
-      content="Plataforma comunitaria para reportar y consultar en tiempo real centros de acopio, veterinarias, albergues y emergencias en Cali con mapa interactivo y asistente de IA."
+      content="Mapa en vivo de emergencias en Cali: centros de acopio, albergues, veterinarias y salud por barrio. Filtra por categoría o localízate con GPS."
     />
     <meta name="theme-color" content="#EA580C" />
     <meta name="robots" content="index,follow" />
-    <link rel="canonical" href="https://ayudaencali.lat" />
+    <link rel="canonical" href="https://www.ayudaencali.lat/" />
 
-    <!-- Iconos -->
+    <!-- Iconos (el `.ico` es el que piden Google/Bing por defecto) -->
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="icon" href="/favicon.ico" sizes="32x32" />
     <link rel="apple-touch-icon" href="/images/apple-touch-icon.png" />
+
+    <!-- PWA (T30): instalable + theme-color (meta arriba) -->
+    <link rel="manifest" href="/manifest.webmanifest" />
 
     <!-- Vista previa al compartir (Open Graph / Twitter) -->
     <meta property="og:site_name" content="AyudaEnCali" />
     <meta property="og:locale" content="es_CO" />
     <meta property="og:type" content="website" />
-    <meta property="og:url" content="https://ayudaencali.lat" />
+    <meta property="og:url" content="https://www.ayudaencali.lat/" />
     <meta property="og:title" content="AyudaEnCali — Red de ayuda y emergencias de Cali" />
     <meta
       property="og:description"
@@ -48,6 +52,161 @@
     <meta name="twitter:image:alt" content="Panorama de Cali con la marca de AyudaEnCali" />
 
     <!--
+      Datos estructurados (T35). Bloques de datos: no se ejecutan, así que no
+      están sujetos a `script-src` de la CSP. El `FAQPage` debe reflejar
+      carácter a carácter el FAQ visible, cuya fuente única de verdad es
+      `src/data/faq.ts` (ver la regla de sincronía en ese fichero).
+    -->
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "WebSite",
+        "@id": "https://www.ayudaencali.lat/#website",
+        "url": "https://www.ayudaencali.lat/",
+        "name": "AyudaEnCali",
+        "inLanguage": "es-CO",
+        "description": "Plataforma comunitaria de emergencias de Santiago de Cali: mapa con centros de acopio y albergues, tablón de necesidades solidarias y asistente de IA.",
+        "publisher": {
+          "@id": "https://www.ayudaencali.lat/#organization"
+        }
+      }
+    </script>
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "Organization",
+        "@id": "https://www.ayudaencali.lat/#organization",
+        "name": "AyudaEnCali",
+        "url": "https://www.ayudaencali.lat/",
+        "logo": {
+          "@type": "ImageObject",
+          "url": "https://www.ayudaencali.lat/images/icon-512.png",
+          "width": 512,
+          "height": 512
+        },
+        "description": "Plataforma comunitaria de emergencias de Santiago de Cali: mapa de puntos de ayuda, tablón de necesidades y asistente de IA, mantenida entre vecinos.",
+        "areaServed": {
+          "@type": "City",
+          "name": "Santiago de Cali"
+        },
+        "knowsLanguage": "es-CO"
+      }
+    </script>
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "FAQPage",
+        "inLanguage": "es-CO",
+        "mainEntity": [
+          {
+            "@type": "Question",
+            "name": "¿Qué es AyudaEnCali?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "Es una plataforma comunitaria de emergencias para Santiago de Cali: mapa interactivo con centros de acopio, albergues, veterinarias y servicios de salud; un tablón donde la gente publica necesidades solidarias; y un asistente de IA que responde con esos mismos datos.\nLa mantenemos entre vecinos: cualquiera puede reportar un punto o una necesidad y así mantener el mapa actualizado."
+            }
+          },
+          {
+            "@type": "Question",
+            "name": "¿Necesito una cuenta? ¿Cuál es la diferencia entre registrarme e ingresar?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "Para reportar, comentar o publicar necesidades sí. Hay dos caminos:\nCuenta comunitaria: rellenas el formulario con tu nombre, correo, teléfono, barrio y rol (ciudadano, voluntario o coordinador). Sirve para identificar quién reporta.\nIngresar con tu cuenta existente: si ya tienes cuenta, pulsa «¿Ya tienes cuenta? Ingresa con tu cuenta» en el mismo formulario. Esa sesión es la identidad válida para los apoyos y se sincroniza con tu perfil local.\nConsultar el mapa, el tablón y el asistente no requiere cuenta."
+            }
+          },
+          {
+            "@type": "Question",
+            "name": "¿Cómo publico un centro de ayuda o una necesidad?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "Punto en el mapa: botón naranja «Reportar Ayuda» en la parte superior (o el botón + central en móvil). Elige la categoría —acopio, veterinaria, albergue o salud— y la ubicación.\nNecesidad en el tablón: en la pestaña Tablón, botón «Publicar Necesidad». Describe insumos, barrio y contacto.\nLos dos pasos piden cuenta comunitaria antes de abrir el formulario."
+            }
+          },
+          {
+            "@type": "Question",
+            "name": "¿Cómo funcionan los apoyos (el corazón)?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "Cada persona con sesión iniciada puede dar un solo apoyo por necesidad: pulsas el corazón y se suma; si lo vuelves a pulsar, se retira. El contador nunca baja de cero.\nSin sesión, al pulsar se abre el inicio de sesión de la app; no se registra ningún apoyo anónimo."
+            }
+          },
+          {
+            "@type": "Question",
+            "name": "¿Qué hace el asistente IA y de dónde saca la información?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "El asistente responde dudas sobre centros de ayuda, teléfonos de emergencia y qué hacer ante una crisis en Cali. Usa los puntos y necesidades publicados en esta misma plataforma.\nSi el proveedor de IA no está disponible, responde con un directorio local: el chat nunca queda caído. No sustituye a los servicios de emergencia: para urgencias llama al 123."
+            }
+          },
+          {
+            "@type": "Question",
+            "name": "¿Qué pasa si la base de datos o mi conexión fallan?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "La app guarda los datos en varios niveles: Supabase (PostgreSQL) cuando hay conexión, una caché en memoria y localStorage como respaldo. Si un servicio cae, la interfaz sigue funcionando con lo último que cargó.\nTampoco enviamos tu ubicación a terceros: el mapa pide el GPS solo cuando tú lo activas."
+            }
+          },
+          {
+            "@type": "Question",
+            "name": "Cookies y privacidad: ¿qué se guarda en mi equipo?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "Siempre (esenciales): la sesión de acceso y seguridad, y este propio consentimiento para no volver a preguntarte.\nSolo si lo aceptas (opcionales): recursos de terceros, hoy las tipografías de Google, que pueden registrar tu IP conforme a la política de dicho proveedor. Si eliges «Solo esenciales», no se pide nada a terceros y la app usa las fuentes del sistema.\nTu perfil comunitario (nombre, correo, teléfono, barrio) solo se guarda cuando tú creas la cuenta y no se publica en el mapa. Puedes cambiar esta elección aquí mismo."
+            }
+          },
+          {
+            "@type": "Question",
+            "name": "¿Qué hago en una emergencia real?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "Llama primero a los servicios de emergencia: 123 (Bomberos, Ambulancia y Policía). Esta plataforma sirve para coordinar ayuda comunitaria, no reemplaza a esos servicios.\nDesde el encabezado tienes el botón «Línea 123» que marca directo desde tu teléfono."
+            }
+          },
+          {
+            "@type": "Question",
+            "name": "¿Qué números de emergencia debo guardar en Cali?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "Estas son las líneas de emergencia de Cali que usa la app:\n123 — Emergencias unificadas: Policía, Ambulancia y Bomberos.\n119 — Cuerpo de Bomberos de Cali: incendios, rescates e inundaciones.\n132 — Cruz Roja Seccional Valle: urgencias médicas y socorro.\n144 — Defensa Civil Valle: desastres naturales y apoyo civil.\n125 — CRUE Valle (Ambulancias): Centro Regulador de Urgencias Médicas.\n(602) 441 1525 — Zoonosis y Bienestar Animal Cali: fauna y rescates de animales de calle.\nEn una emergencia real llama primero al 123: esta plataforma coordina ayuda comunitaria y no reemplaza a esos servicios."
+            }
+          },
+          {
+            "@type": "Question",
+            "name": "¿Qué llevar a un albergue?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "Las necesidades cambian según el albergue: mira el tablón de la app, donde cada albergue publica lo que pide. En los reportes activos de Cali se repiten:\ncolchonetas y cobijas térmicas o secas\nagua potable en pacas\nkits de aseo\nalimentos no perecederos\nAntes de salir, revisa el tablón y confirma con el contacto del reporte: así no llevas cosas que ya no necesitan."
+            }
+          },
+          {
+            "@type": "Question",
+            "name": "¿Dónde donar en Cali?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "Abre el mapa y filtra por la categoría Centros de Acopio: verás los puntos de donación activos con dirección, barrio y teléfono. Para saber qué necesitan, consulta el tablón: cada publicación lista los insumos urgentes.\nConsulta siempre con el contacto del punto antes de salir: los puntos son comunitarios y su horario cambia."
+            }
+          },
+          {
+            "@type": "Question",
+            "name": "¿Qué hago con mi mascota en una emergencia?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "(602) 441 1525 — Zoonosis y Bienestar Animal Cali atiende fauna y rescates de animales de calle.\nEn el mapa, la categoría Veterinarias lista clínicas y urgencias veterinarias de Cali con dirección y teléfono; consulta antes si el albergue donde vas acepta mascotas."
+            }
+          },
+          {
+            "@type": "Question",
+            "name": "¿Dónde está el centro de salud más cercano en Cali?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "En el mapa activa Cerca de mí y elige la categoría Emergencias Médicas: los puntos de salud se ordenan por distancia desde tu barrio o desde tu GPS.\nRevisa la dirección y el teléfono en la ficha de cada punto antes de salir."
+            }
+          }
+        ]
+      }
+    </script>
+
+    <!--
       Tipografías de terceros: sin <link> bloqueante en el head. Se inyectan
       desde `src/utils/consent.ts` (`applyConsent`) de forma asíncrona y solo
       si la persona aceptó las cookies opcionales (banner de consentimiento);
@@ -57,7 +216,99 @@
     -->
   </head>
   <body class="bg-white text-slate-900 font-sans antialiased selection:bg-orange-500 selection:text-white">
-    <div id="root"></div>
+    <!--
+      Shell estático (T35): contenido real antes de (y sin) JavaScript.
+      React lo limpia al montar (`createRoot().render()`), así que solo lo ven
+      los crawlers sin JS, las personas sin JS y quien llega antes del bundle.
+      El `<h1>` y los enlaces de abajo son el mismo contenido que la vista de
+      la app.
+    -->
+    <div id="root">
+      <main class="max-w-3xl mx-auto px-6 py-14">
+        <h1 class="text-3xl sm:text-4xl font-extrabold tracking-tight text-slate-900">
+          Centros de acopio y albergues en Cali
+        </h1>
+        <p class="mt-4 text-base leading-relaxed text-slate-700">
+          <strong>AyudaEnCali</strong> es la plataforma comunitaria de emergencias de Santiago de
+          Cali: mapa en vivo con centros de acopio, albergues, veterinarias y servicios de salud
+          barrio a barrio, tablón donde la comunidad publica necesidades solidarias y asistente de
+          IA que responde con esos mismos datos. Cualquiera puede reportar un punto o una
+          necesidad.
+        </p>
+        <ul class="mt-5 space-y-2 list-disc list-inside text-slate-800 marker:text-orange-600">
+          <li>
+            <a class="font-semibold text-orange-700 hover:underline" href="/#preguntas-frecuentes"
+              >Preguntas frecuentes (cómo reportar, cuentas, privacidad)</a
+            >
+          </li>
+          <li>
+            <a class="font-semibold text-orange-700 hover:underline" href="/#tablon"
+              >Tablón de necesidades solidarias de Cali</a
+            >
+          </li>
+          <li>
+            <a class="font-semibold text-orange-700 hover:underline" href="/#asistente"
+              >Asistente IA de emergencias en Cali</a
+            >
+          </li>
+          <li>
+            <a class="font-semibold text-orange-700 hover:underline" href="tel:123"
+              >Emergencias reales: llama al 123</a
+            >
+            (Bomberos, Ambulancia y Policía)
+          </li>
+          <li>
+            <a class="font-semibold text-orange-700 hover:underline" href="/api/points"
+              >Datos abiertos: /api/points</a
+            >
+            (puntos de ayuda en JSON)
+          </li>
+        </ul>
+        <section id="tablon" class="mt-10 border-t border-slate-200 pt-6">
+          <h2 class="text-xl font-bold text-slate-900">Tablón de necesidades y ayudas en Cali</h2>
+          <p class="mt-2 leading-relaxed text-slate-700">
+            Consulta las necesidades solidarias publicadas por la comunidad y confirma cada
+            reporte con su contacto antes de desplazarte: la información puede cambiar.
+          </p>
+        </section>
+        <section id="asistente" class="mt-6">
+          <h2 class="text-xl font-bold text-slate-900">Asistente de emergencias en Cali</h2>
+          <p class="mt-2 leading-relaxed text-slate-700">
+            El asistente ofrece orientación sobre los recursos publicados en AyudaEnCali. No
+            sustituye a los servicios oficiales ni a la atención profesional.
+          </p>
+        </section>
+        <section id="preguntas-frecuentes" class="mt-6">
+          <h2 class="text-xl font-bold text-slate-900">Preguntas frecuentes</h2>
+          <h3 class="mt-4 font-semibold text-slate-900">¿Qué es AyudaEnCali?</h3>
+          <p class="mt-1 leading-relaxed text-slate-700">
+            Es una plataforma comunitaria para consultar y reportar centros de acopio, albergues,
+            veterinarias, servicios de salud y necesidades solidarias en Santiago de Cali.
+          </p>
+          <h3 class="mt-4 font-semibold text-slate-900">¿Qué hago en una emergencia real?</h3>
+          <p class="mt-1 leading-relaxed text-slate-700">
+            Llama primero al <a class="font-bold text-rose-700" href="tel:123">123</a>. AyudaEnCali
+            coordina información comunitaria y no reemplaza a los servicios oficiales.
+          </p>
+          <p class="mt-4 text-sm leading-relaxed text-slate-600">
+            Los puntos son comunitarios y pueden cambiar; confirma dirección, disponibilidad y
+            horario con el contacto del reporte antes de salir.
+          </p>
+        </section>
+        <noscript>
+          <p class="mt-5 rounded-2xl border border-orange-200 bg-orange-50 p-4 text-sm text-slate-800">
+            JavaScript está desactivado, así que el mapa y el tablón no pueden cargarse. En una
+            emergencia real llama al <a class="font-bold text-rose-700" href="tel:123">123</a>
+            (Bomberos, Ambulancia y Policía), al <a class="font-bold text-rose-700" href="tel:119">119</a>
+            (Bomberos), al <a class="font-bold text-rose-700" href="tel:132">132</a> (Cruz Roja) o al
+            <a class="font-bold text-rose-700" href="tel:144">144</a> (Defensa Civil). Las
+            <a class="font-semibold text-orange-700" href="/#preguntas-frecuentes">preguntas frecuentes</a>
+            y los <a class="font-semibold text-orange-700" href="/api/points">datos abiertos</a>
+            siguen disponibles sin JavaScript.
+          </p>
+        </noscript>
+      </main>
+    </div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

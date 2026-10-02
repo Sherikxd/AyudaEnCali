@@ -67,13 +67,97 @@ export type ApiHandler = (
   res: JsonResponder,
 ) => ApiResult | Promise<ApiResult>;
 
-/** Cabeceras de seguridad aplicadas a cada respuesta de API. */
+/**
+ * Content-Security-Policy **idéntica** a la del bloque de `/` de
+ * `vercel.json` (área de agente-calidad; T32 · paridad local/Docker).
+ *
+ * `vercel.json` solo la aplica a los estáticos del despliegue: aquí la usan
+ * Express (local, Docker, Cloud Run — el HTML de `dist/` pasa por
+ * `securityHeaders` en `server/app.ts`) y las funciones de Vercel (respuesta
+ * de API). Es una copia textual: `npm run test:server` (sección S) y
+ * `npm run smoke:vercel` la comparan carácter a carácter con la de
+ * `vercel.json`, así que si cambia una, el test va a rojo y hay que
+ * sincronizar la otra.
+ *
+ * Única excepción: `relaxCspForViteDev` (más abajo), que se aplica solo
+ * cuando `server.ts` monta Vite en desarrollo, porque el HTML de `npm run
+ * dev` lleva el preamble inline de react-refresh.
+ */
+export const CONTENT_SECURITY_POLICY =
+  "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'self'; form-action 'self' https://*.clerk.accounts.dev https://*.clerk.dev https://*.clerk.com; script-src 'self' https://*.clerk.accounts.dev https://*.clerk.dev https://*.clerk.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' data: https://fonts.gstatic.com; img-src 'self' data: blob: https://res.cloudinary.com https://*.tile.openstreetmap.org https://server.arcgisonline.com https://img.clerk.com https://*.clerk.com https://*.clerk.accounts.dev https://*.clerk.dev; connect-src 'self' https://nominatim.openstreetmap.org https://fonts.googleapis.com https://*.clerk.accounts.dev https://*.clerk.dev https://*.clerk.com https://clerk-telemetry.com; frame-src 'self' https://*.clerk.accounts.dev https://*.clerk.dev https://*.clerk.com; worker-src 'self' blob:; manifest-src 'self'; media-src 'self' blob: data:";
+
+/** Permissions-Policy con el mismo alcance que la de `vercel.json`. */
+export const PERMISSIONS_POLICY = 'camera=(), microphone=(), geolocation=(self), payment=(), usb=()';
+
+/**
+ * Relaja la CSP para el HTML que sirve **Vite en desarrollo** (`npm run dev`).
+ *
+ * El transformador de React inyecta en el shell un `<script type="module">`
+ * inline (el preamble de react-refresh: `injectIntoGlobalHook(window) …`),
+ * que `script-src 'self'` bloquearía y dejaría el arranque de la app sin
+ * HMR ni recarga en caliente. Se añade por eso solo en desarrollo:
+ *
+ *  - `'unsafe-inline'` en `script-src` → deja pasar ese preamble (en
+ *    producción el HTML de `dist/` solo tiene el `<script module src=…>` del
+ *    bundle, comprobado en el humo);
+ *  - `ws:` en `connect-src` → el socket de HMR, que no casa con `'self'`
+ *    en todos los navegadores.
+ *
+ * El resto de directivas siguen iguales, así que en desarrollo también se
+ * comprueba que no se cargue nada fuera de los dominios permitidos.
+ * `server.ts` la activa al montar el middleware de Vite; el resto de
+ * procesos (humo, tests, producción) mandan `CONTENT_SECURITY_POLICY` tal
+ * cual, carácter a carácter como `vercel.json`.
+ */
+export function relaxCspForViteDev(policy: string): string {
+  return policy
+    .replace("script-src 'self'", "script-src 'self' 'unsafe-inline'")
+    .replace("connect-src 'self'", "connect-src 'self' ws:");
+}
+
+/** `true` mientras se sirve el HTML de Vite en desarrollo (ver arriba). */
+let servingViteDev = false;
+
+/** Lo llama `server.ts` al montar el middleware de Vite (solo `npm run dev`). */
+export function enableViteDevCsp(): void {
+  servingViteDev = true;
+}
+
+/** CSP efectiva: la de `vercel.json`, relajada solo detrás de Vite en dev. */
+export function contentSecurityPolicy(): string {
+  return servingViteDev ? relaxCspForViteDev(CONTENT_SECURITY_POLICY) : CONTENT_SECURITY_POLICY;
+}
+
+/**
+ * Cabeceras de seguridad aplicadas a cada respuesta de API **y** a las
+ * páginas servidas en local/Docker (T32): mismo set que `vercel.json`
+ * manda en el despliegue, más `Cross-Origin-Opener-Policy`, que solo pone
+ * el adaptador de API (los estáticos de Vercel no la llevan).
+ */
 export function setSecurityHeaders(res: JsonResponder): void {
+  res.setHeader('Content-Security-Policy', contentSecurityPolicy());
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('X-Frame-Options', 'SAMEORIGIN');
   res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
-  res.setHeader('Permissions-Policy', 'geolocation=(self)');
+  res.setHeader('Permissions-Policy', PERMISSIONS_POLICY);
   res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
+}
+
+/**
+ * `X-Robots-Tag: noindex` para las respuestas de **API** (T39 · SEO-15).
+ *
+ * `/api/*` devuelve JSON con status 200 y Google puede rastrear e indexar
+ * ese contenido; con esta cabecera lo descarta. Se aplica SOLO a las rutas
+ * de API, nunca al HTML de la SPA (que sí debe indexarse), por eso vive
+ * FUERA de `setSecurityHeaders` (T32), que sí comparten API y HTML:
+ *
+ *  - Express (`server/app.ts`): middleware `apiRobotsHeaders` montado en
+ *    `/api`, aparte del `securityHeaders` global;
+ *  - Vercel (`server/vercel.ts`): dentro de `createApiRoute`, que solo
+ *    sirve funciones `api/*.ts` (los estáticos no pasan por aquí).
+ */
+export function setApiRobotsHeaders(res: JsonResponder): void {
+  res.setHeader('X-Robots-Tag', 'noindex');
 }
 
 /**

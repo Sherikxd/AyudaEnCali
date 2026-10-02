@@ -1,11 +1,16 @@
 import { randomUUID } from 'node:crypto';
 import type { ApiHandler, ApiRequest, ApiResult, JsonResponder } from '../http.js';
 import { effectiveMethod, notFoundResult } from '../http.js';
-import { getAuthenticatedUser, respondUnauthorized } from '../auth.js';
+import {
+  MODERATION_FORBIDDEN,
+  canModerate,
+  getAuthenticatedUser,
+  respondUnauthorized,
+} from '../auth.js';
 import { readLimiter, writeLimiter } from '../limiters.js';
 import { pageMeta, paginate, readPageParams, type PageParams } from '../pagination.js';
 import { resolveEntityId } from '../resourceId.js';
-import { memory, pushInCache, removeFromCache, replaceInCache } from '../store.js';
+import { memory, purgeReportsFromCache, pushInCache, removeFromCache, replaceInCache } from '../store.js';
 import {
   getSupabaseClient,
   mapPointRow,
@@ -16,17 +21,19 @@ import {
   withSupabaseRetry,
 } from '../supabase.js';
 import type { HelpPointRow } from '../supabase.js';
-import { validatePoint, validatePointUpdate } from '../validation.js';
+import { validatePoint, validatePointUpdate, validateVerifiedUpdate } from '../validation.js';
 import type { HelpPoint } from '../../src/types/index.js';
 
 /**
- * `GET · POST /api/points` · `PUT · DELETE /api/points/:id`.
+ * `GET · POST /api/points` · `PUT · PATCH · DELETE /api/points/:id`.
  *
  * Lectura desde Supabase con respaldo en la caché en memoria; escritura
  * autenticada con el límite de tasa compartido. El ciclo de vida (T2) solo
  * lo usa **quien publicó el punto**: sesión obligatoria (401) y autoría
- * comprobada contra el JWT (403). En Vercel las rutas con id llegan por los
- * rewrites de `vercel.json`.
+ * comprobada contra el JWT (403). `PATCH` es la acción de moderación (T28):
+ * solo `coordinador` (o la lista blanca `MODERATOR_USER_IDS`) marca
+ * `verified`. En Vercel las rutas con id llegan por los rewrites de
+ * `vercel.json`.
  */
 
 /** Lee el punto de la caché o, si no está, de la base de datos. */
@@ -55,11 +62,19 @@ function isAuthor(authorId: string | undefined, userId: string): boolean {
 }
 
 /**
- * `PUT /api/points/:id` y `DELETE /api/points/:id`.
+ * `PUT`/`DELETE /api/points/:id` (autoría) y `PATCH /api/points/:id`
+ * (moderación, T28).
  *
- * Orden de comprobaciones: límite de tasa → sesión (401) → existencia (404)
- * → autoría (403) → validación (400). El id se resuelve con la misma regla
- * que los apoyos (`server/resourceId.ts`).
+ * Orden de comprobaciones:
+ *
+ *  - `PUT`/`DELETE`: límite de tasa → sesión (401) → existencia (404) →
+ *    autoría (403) → validación (400) — el orden histórico de T2.
+ *  - `PATCH`: límite de tasa → sesión (401) → **permiso de moderación
+ *    (403)** → existencia (404) → validación (400): el permiso no depende
+ *    del punto, así que se decide antes de mirar la BD (y un ciudadano no
+ *    aprende qué ids existen ni cuáles no).
+ *
+ * El id se resuelve con la misma regla que los apoyos (`server/resourceId.ts`).
  */
 async function lifecycle(
   input: ApiRequest,
@@ -67,13 +82,58 @@ async function lifecycle(
   method: string,
   id: string,
 ): Promise<ApiResult> {
-  if (method !== 'PUT' && method !== 'DELETE') return notFoundResult(input);
+  if (method !== 'PUT' && method !== 'DELETE' && method !== 'PATCH') return notFoundResult(input);
   if (writeLimiter.enforce(input.clientIp, res)) return null;
 
   const user = await getAuthenticatedUser(input);
   if (!user) {
-    respondUnauthorized(res, 'Debes iniciar sesión para editar un punto de ayuda.');
+    respondUnauthorized(
+      res,
+      method === 'PATCH'
+        ? 'Debes iniciar sesión para verificar un punto de ayuda.'
+        : 'Debes iniciar sesión para editar un punto de ayuda.',
+    );
     return null;
+  }
+
+  if (method === 'PATCH') {
+    if (!canModerate(user)) return { status: 403, body: { error: MODERATION_FORBIDDEN } };
+
+    const target = await loadPoint(id);
+    if (!target) return { status: 404, body: { error: 'Punto de ayuda no encontrado.' } };
+
+    const parsedVerified = validateVerifiedUpdate(input.body);
+    if (!parsedVerified.ok) {
+      return {
+        status: 400,
+        body: { error: 'Datos de moderación inválidos.', details: parsedVerified.errors },
+      };
+    }
+
+    const now = new Date().toISOString();
+    const moderated: HelpPoint = {
+      ...target,
+      verified: parsedVerified.value.verified,
+      updatedAt: now,
+    };
+
+    await maybeVerifySchema();
+    const client = getSupabaseClient();
+    if (client) {
+      const { error } = await withSupabaseRetry('Supabase moderate help_points', () =>
+        client
+          .from('help_points')
+          .update({ verified: moderated.verified, updated_at: now })
+          .eq('id', target.id),
+      );
+      if (error) {
+        respondWriteFailure(res, 'el punto', error);
+        return null;
+      }
+    }
+
+    memory.points = replaceInCache(memory.points, moderated);
+    return { status: 200, body: { point: moderated } };
   }
 
   const point = await loadPoint(id);
@@ -98,8 +158,9 @@ async function lifecycle(
     }
     memory.points = removeFromCache(memory.points, point.id);
     // Los comentarios del punto se van con él (misma regla que la FK
-    // `ON DELETE CASCADE` de `supabase/schema.sql`).
+    // `ON DELETE CASCADE` de `supabase/schema.sql`)… y también sus reportes.
     memory.comments = memory.comments.filter((comment) => comment.pointId !== point.id);
+    purgeReportsFromCache('point', point.id);
     return { status: 200, body: { success: true, id: point.id } };
   }
 
@@ -113,7 +174,7 @@ async function lifecycle(
     ...point,
     ...patch,
     // Ni el id ni la autoría cambian con una edición; `verified` es de
-    // moderación (T7) y no se lee del parche.
+    // moderación (T28) y no se lee del parche del autor.
     id: point.id,
     authorId: point.authorId,
     verified: point.verified,
@@ -183,7 +244,7 @@ export const pointsHandler: ApiHandler = async (input, res) => {
   const method = effectiveMethod(input.method);
   const id = resolveEntityId(input, 'points');
 
-  // Ruta con id (`/points/XYZ`): solo PUT/DELETE; el resto → 404.
+  // Ruta con id (`/points/XYZ`): solo PUT/PATCH/DELETE; el resto → 404.
   if (id) return lifecycle(input, res, method, id);
 
   if (method === 'GET') return listPoints(input, res);

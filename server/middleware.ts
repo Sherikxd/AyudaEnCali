@@ -1,10 +1,22 @@
 import type { ErrorRequestHandler, Request, RequestHandler, Response } from 'express';
 import { errorMessage, logger } from './logger.js';
-import { setSecurityHeaders } from './http.js';
+import { setApiRobotsHeaders, setSecurityHeaders } from './http.js';
 
 /** Cabeceras básicas de seguridad aplicadas a toda la API. */
 export const securityHeaders: RequestHandler = (_req: Request, res: Response, next) => {
   setSecurityHeaders(res);
+  next();
+};
+
+/**
+ * `X-Robots-Tag: noindex` en las respuestas de `/api` (T39 · SEO-15).
+ *
+ * Se monta en `/api` (NO en el `securityHeaders` global de arriba): la cabecera
+ * anti-indexación no debe salir nunca en el HTML de la SPA, que sí tiene que
+ * aparecer en los buscadores.
+ */
+export const apiRobotsHeaders: RequestHandler = (_req: Request, res: Response, next) => {
+  setApiRobotsHeaders(res);
   next();
 };
 

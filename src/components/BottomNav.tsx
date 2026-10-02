@@ -1,11 +1,11 @@
 import React from 'react';
 import { useApp } from '../context/AppContext';
 import { Map, MessageSquare, User, PlusCircle, Newspaper } from 'lucide-react';
+import { TabLink } from './TabLink';
 
 export const BottomNav: React.FC = () => {
   const { 
     activeTab, 
-    setActiveTab, 
     setIsReportModalOpen, 
     setReportModalType, 
     userProfile, 
@@ -28,28 +28,26 @@ export const BottomNav: React.FC = () => {
     <nav className="md:hidden fixed bottom-0 left-0 right-0 z-40 bg-white/95 backdrop-blur-lg border-t border-slate-200/80 px-2 py-1 safe-area-bottom">
       <div className="grid grid-cols-5 items-center h-14">
         {/* Tab 1: Mapa */}
-        <button
-          onClick={() => setActiveTab('map')}
-          aria-current={activeTab === 'map' ? 'page' : undefined}
+        <TabLink
+          tab="map"
           className={`flex flex-col items-center justify-center min-h-[44px] min-w-[44px] py-1 transition-colors ${
             activeTab === 'map' ? 'text-orange-600 font-bold' : 'text-slate-500 hover:text-slate-800'
           }`}
         >
           <Map className="w-5 h-5" strokeWidth={activeTab === 'map' ? 2.5 : 2} />
           <span className="text-[10px] tracking-tight mt-0.5">Mapa</span>
-        </button>
+        </TabLink>
 
         {/* Tab 2: Tablón */}
-        <button
-          onClick={() => setActiveTab('blog')}
-          aria-current={activeTab === 'blog' ? 'page' : undefined}
+        <TabLink
+          tab="blog"
           className={`flex flex-col items-center justify-center min-h-[44px] min-w-[44px] py-1 transition-colors ${
             activeTab === 'blog' ? 'text-orange-600 font-bold' : 'text-slate-500 hover:text-slate-800'
           }`}
         >
           <Newspaper className="w-5 h-5" strokeWidth={activeTab === 'blog' ? 2.5 : 2} />
           <span className="text-[10px] tracking-tight mt-0.5">Tablón</span>
-        </button>
+        </TabLink>
 
         {/* Tab 3: Reportar (Center button) */}
         <button
@@ -63,9 +61,8 @@ export const BottomNav: React.FC = () => {
         </button>
 
         {/* Tab 4: Asistente IA */}
-        <button
-          onClick={() => setActiveTab('chat')}
-          aria-current={activeTab === 'chat' ? 'page' : undefined}
+        <TabLink
+          tab="chat"
           className={`flex flex-col items-center justify-center min-h-[44px] min-w-[44px] py-1 transition-colors relative ${
             activeTab === 'chat' ? 'text-orange-600 font-bold' : 'text-slate-500 hover:text-slate-800'
           }`}
@@ -73,19 +70,18 @@ export const BottomNav: React.FC = () => {
           <MessageSquare className="w-5 h-5" strokeWidth={activeTab === 'chat' ? 2.5 : 2} />
           <span className="text-[10px] tracking-tight mt-0.5">Asistente</span>
           <span className="absolute top-1.5 right-4 w-2 h-2 rounded-full bg-emerald-500 ring-2 ring-white" />
-        </button>
+        </TabLink>
 
         {/* Tab 5: Perfil */}
-        <button
-          onClick={() => setActiveTab('profile')}
-          aria-current={activeTab === 'profile' ? 'page' : undefined}
+        <TabLink
+          tab="profile"
           className={`flex flex-col items-center justify-center min-h-[44px] min-w-[44px] py-1 transition-colors ${
             activeTab === 'profile' ? 'text-orange-600 font-bold' : 'text-slate-500 hover:text-slate-800'
           }`}
         >
           <User className="w-5 h-5" strokeWidth={activeTab === 'profile' ? 2.5 : 2} />
           <span className="text-[10px] tracking-tight mt-0.5">Perfil</span>
-        </button>
+        </TabLink>
       </div>
     </nav>
   );

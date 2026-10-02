@@ -5,7 +5,7 @@ import { getAuthenticatedUser, respondUnauthorized } from '../auth.js';
 import { readLimiter, writeLimiter } from '../limiters.js';
 import { pageMeta, paginate, readPageParams, type PageParams } from '../pagination.js';
 import { resolveEntityId } from '../resourceId.js';
-import { memory, pushInCache, removeFromCache, replaceInCache } from '../store.js';
+import { memory, purgeReportsFromCache, pushInCache, removeFromCache, replaceInCache } from '../store.js';
 import {
   getSupabaseClient,
   mapNeedRow,
@@ -95,6 +95,9 @@ async function lifecycle(
       }
     }
     memory.needs = removeFromCache(memory.needs, need.id);
+    // Sus reportes se van con ella (misma regla que la FK `ON DELETE
+    // CASCADE` de `entity_reports`, T28).
+    purgeReportsFromCache('need', need.id);
     return { status: 200, body: { success: true, id: need.id } };
   }
 

@@ -1,0 +1,14 @@
+# AyudaEnCali — robots.txt
+#
+# Política (decisión de la persona, 2026-10-02): PERMITIRLO TODO. Los bots
+# de entrenamiento y de citación quedan todos permitidos —máxima difusión
+# porque es una app de emergencias— y se retira la matriz de bloqueo de 2026
+# que había aquí (GEO-01 queda anulado por decisión propia).
+#
+# `Allow: /` para cualquier user-agent; la API ya se protege sola con la
+# cabecera `X-Robots-Tag: noindex` (T39), así que no hace falta `Disallow`.
+
+User-agent: *
+Allow: /
+
+Sitemap: https://www.ayudaencali.lat/sitemap.xml

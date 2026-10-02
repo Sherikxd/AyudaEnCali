@@ -2,7 +2,7 @@ import React, { useState, useMemo } from 'react';
 import { useUser } from '@clerk/clerk-react';
 import { useApp } from '../context/AppContext';
 import { HelpCategory, HelpNeed, NeedUrgency } from '../types';
-import { CDN_IMAGES } from '../config/images';
+import { BLOG_HERO_SRCSET, CDN_IMAGES } from '../config/images';
 import { barrioLabel, formatKm, needDistanceKm, sameBarrio } from '../utils/proximity';
 import { 
   Plus, 
@@ -241,9 +241,12 @@ export const BlogView: React.FC = () => {
         <div className="absolute inset-0 opacity-25">
           <img
             src={CDN_IMAGES.blogHero}
+            srcSet={BLOG_HERO_SRCSET}
+            sizes="100vw"
             alt="Panorama de Cali Solidaria"
             width={1376}
             height={768}
+            fetchPriority="high"
             decoding="async"
             className="w-full h-full object-cover"
             referrerPolicy="no-referrer"

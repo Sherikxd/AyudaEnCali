@@ -5,12 +5,16 @@
  *
  * Diseño (hereda las lecciones de los harnesses de `/tmp` del log 19):
  *
- *  - **Sin Express ni servidor** (secciones A–L): los núcleos de
+ *  - **Sin Express ni servidor** (secciones A–L, N y S): los núcleos de
  *    `server/handlers/*` se importan como módulos y reciben un `ApiRequest`
  *    + `JsonResponder` falsos; la respuesta se construye igual que `mount()`
  *    de `server/app.ts` (`ApiResult` → status/json, `null` = ya respondió).
- *    La sección **M** (contrato Express ↔ funciones Vercel, MEJ-01) es la
- *    excepción a propósito: levanta Express por HTTP real e invoca las
+ *    La sección **S** (T29 semilla única + T32 cabeceras + T39
+ *    `X-Robots-Tag`) además compara los
+ *    datasets servidor/cliente carácter a carácter y las cabeceras de
+ *    `setSecurityHeaders` con las de `vercel.json`. La sección **M**
+ *    (contrato Express ↔ funciones Vercel, MEJ-01) es la excepción a
+ *    propósito: levanta Express por HTTP real e invoca las
  *    funciones `api/*.ts` con `req`/`res` falsos para exigir que respondan
  *    idéntico (incluidos los tests de BUG-01 y BUG-03, que ahí sí usan un
  *    cliente Supabase de mentira apuntando al stub del `fetch` global).
@@ -34,7 +38,7 @@
  * en el log del agente para T17.
  */
 import { generateKeyPairSync, sign as cryptoSign } from 'node:crypto';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import http from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -53,6 +57,9 @@ process.env.GEMINI_API_KEY = '';
 // Clave de verificación forzada: el stub de JWKS responde a cualquier
 // secretKey, así el resultado no depende del .env de quien ejecute.
 process.env.CLERK_SECRET_KEY = 'sk_test_test-nucleos';
+// Moderación (T28): lista blanca vacía para que los 403 de la sección N no
+// dependan del .env local (un sub listado ahí haría fallar los tests).
+process.env.MODERATOR_USER_IDS = '';
 process.env.VERCEL ??= '1';
 
 /* ------------------------------- 1. Clave de prueba + stub del fetch global */
@@ -67,7 +74,7 @@ const jwk = {
 const b64 = (value) => Buffer.from(value).toString('base64url');
 
 /** JWT firmado por «Clerk» de prueba (RS256, kid conocido por el stub). */
-function mintJwt({ sub, expInSeconds = 300, tamper = false }) {
+function mintJwt({ sub, expInSeconds = 300, tamper = false, role, publicMetadata }) {
   const now = Math.floor(Date.now() / 1000);
   const header = { alg: 'RS256', typ: 'JWT', kid: 'test-nucleos-key' };
   const payload = {
@@ -80,6 +87,10 @@ function mintJwt({ sub, expInSeconds = 300, tamper = false }) {
     exp: now + expInSeconds,
     name: 'Tester Nucleos',
   };
+  // Rol de moderación (T28): `role` directo o vía `public_metadata.role`,
+  // igual que los dos caminos que lee `roleFromClaims` del servidor.
+  if (role !== undefined) payload.role = role;
+  if (publicMetadata !== undefined) payload.public_metadata = publicMetadata;
   const data = `${b64(JSON.stringify(header))}.${b64(JSON.stringify(payload))}`;
   let signature = cryptoSign('sha256', Buffer.from(data), privateKey);
   if (tamper) signature = Buffer.from(signature).reverse(); // firma basura
@@ -280,11 +291,14 @@ try {
   const { needsSupportHandler } = await vite.ssrLoadModule('/server/handlers/needsSupport.ts');
   const { supportMineHandler } = await vite.ssrLoadModule('/server/handlers/supportMine.ts');
   const { chatHandler } = await vite.ssrLoadModule('/server/handlers/chat.ts');
+  const { reportsHandler } = await vite.ssrLoadModule('/server/handlers/reports.ts');
 
   const JWT_AUTHOR = mintJwt({ sub: 'user_nuc_author' });
   const JWT_OTHER = mintJwt({ sub: 'user_nuc_other' });
   const JWT_EXPIRED = mintJwt({ sub: 'user_nuc_author', expInSeconds: -3_600 });
   const JWT_TAMPERED = mintJwt({ sub: 'user_nuc_author', tamper: true });
+  // Moderador (T28): rol `coordinador` directamente en los claims.
+  const JWT_MOD = mintJwt({ sub: 'user_nuc_mod', role: 'coordinador' });
 
   /* ------------------------------------------------- A. Aislamiento BD */
   check('A1 el cliente de Supabase queda sin construir (sin bootstrap → nada toca la BD)', getSupabaseClient() === null);
@@ -304,12 +318,15 @@ try {
   const page2 = await call(needsHandler, { path: '/needs', query: { page: '2', limit: '2' }, clientIp: IP_PAGE });
   const idsPage1 = new Set((page1.body?.needs ?? []).map((n) => n.id));
   const idsPage2 = (page2.body?.needs ?? []).map((n) => n.id);
+  // La página 2 solo puede traer `limit` ítems: como mucho, los que quedan
+  // después de la página 1 (con 6 necesidades y limit=2 → 2, no 4).
+  const esperadosPagina2 = Math.min(2, Math.max(0, (total ?? 0) - 2));
   check(
     'B2 la página 2 sigue sin solaparse con la 1',
     page2.status === 200 && Array.isArray(page2.body?.needs)
-      && page2.body.needs.length === Math.max(0, (total ?? 0) - 2)
+      && page2.body.needs.length === esperadosPagina2
       && idsPage2.length > 0 && idsPage2.every((id) => !idsPage1.has(id)),
-    `items=${page2.body?.needs?.length}`,
+    `items=${page2.body?.needs?.length} esperados=${esperadosPagina2}`,
   );
   const plain = await call(needsHandler, { path: '/needs', clientIp: IP_PAGE });
   check(
@@ -654,6 +671,146 @@ try {
     `supported=${JSON.stringify(appCtx.supportedNeedIds)}`,
   );
 
+  /* ------- N. Verificación y cola de reportes (T28 · FEAT-02) ------------ */
+  // Va ANTES de M a propósito: M instala un cliente Supabase falso (M11) y
+  // este bloque necesita el modo sin BD (caché en memoria), que es como
+  // arranca el proceso. IP propia para no tocar los contadores de rate limit.
+  const IP_N = '198.51.100.50';
+  const AUTH_N = { authorization: `Bearer ${JWT_AUTHOR}` }; // ciudadano (sin rol)
+  const AUTH_N_OTHER = { authorization: `Bearer ${JWT_OTHER}` }; // ciudadano
+  const AUTH_MOD = { authorization: `Bearer ${JWT_MOD}` }; // coordinador
+  const SIN_MODERACION = 'Se requiere permiso de moderación para esta acción.';
+  const SIN_SESION_REPORT = 'Debes iniciar sesión para reportar contenido.';
+  const SIN_SESION_COLA = 'Debes iniciar sesión para ver la cola de reportes.';
+  const nPointId = 'nuc-mod-point';
+  const nNeedId = 'nuc-mod-need';
+
+  const n0 = await call(pointsHandler, {
+    method: 'POST',
+    path: '/points',
+    headers: AUTH_N,
+    body: { id: nPointId, name: 'Punto a moderar', lat: 3.45, lng: -76.55, address: 'Calle 9 # 1-2', barrio: 'El Poblado 2' },
+    clientIp: IP_N,
+  });
+  check('N0 semilla: POST /points crea el punto de la sección (201)', n0.status === 201 && n0.body?.point?.id === nPointId, `status=${n0.status}`);
+  const n0b = await call(needsHandler, {
+    method: 'POST',
+    path: '/needs',
+    headers: AUTH_N,
+    body: { id: nNeedId, title: 'Necesidad a reportar', barrio: 'El Poblado 2' },
+    clientIp: IP_N,
+  });
+  check('N0b semilla: POST /needs crea la necesidad de la sección (201)', n0b.status === 201 && n0b.body?.need?.id === nNeedId, `status=${n0b.status}`);
+
+  // --- PATCH /points/:id: quién puede marcar `verified` ---
+  const n1 = await call(pointsHandler, { method: 'PATCH', path: `/points/${nPointId}`, body: { verified: true }, clientIp: IP_N });
+  check('N1 PATCH verify sin sesión → 401', n1.status === 401 && sameText(n1.body?.error, 'Debes iniciar sesión para verificar un punto de ayuda.'), `status=${n1.status} ${JSON.stringify(n1.body)}`);
+
+  const n2 = await call(pointsHandler, { method: 'PATCH', path: `/points/${nPointId}`, headers: AUTH_N, body: { verified: true }, clientIp: IP_N });
+  check('N2 sesión sin rol moderador → 403 de moderación', n2.status === 403 && sameText(n2.body?.error, SIN_MODERACION), `status=${n2.status} ${JSON.stringify(n2.body)}`);
+
+  // N2b/N21b: el JWT SÍ lleva rol, pero de ciudadano. Aquí el permiso lo
+  // decide `isModerator(role)` (no el atajo «sin rol → sin permisos»), así
+  // que si `isModerator` llegara a conceder a cualquiera, estos dos se ponen
+  // rojos.
+  const JWT_CIUDADANO_ROL = mintJwt({ sub: 'user_nuc_ciudadano_rol', role: 'ciudadano' });
+  const AUTH_CIUDADANO_ROL = { authorization: `Bearer ${JWT_CIUDADANO_ROL}` };
+  const n2b = await call(pointsHandler, { method: 'PATCH', path: `/points/${nPointId}`, headers: AUTH_CIUDADANO_ROL, body: { verified: true }, clientIp: IP_N });
+  check('N2b rol ciudadano EXPLÍCITO en el JWT → 403 (isModerator niega)', n2b.status === 403 && sameText(n2b.body?.error, SIN_MODERACION), `status=${n2b.status} ${JSON.stringify(n2b.body)}`);
+
+  // El permiso se decide ANTES de mirar la entidad (orden T28: 401→403→404→400).
+  const n3 = await call(pointsHandler, { method: 'PATCH', path: '/points/sin-punto-xyz', headers: AUTH_N, body: { verified: true }, clientIp: IP_N });
+  check('N3 …y así el 403 sale antes que el 404 (no se filtran ids)', n3.status === 403 && sameText(n3.body?.error, SIN_MODERACION), `status=${n3.status}`);
+
+  const n4 = await call(pointsHandler, { method: 'PATCH', path: '/points/sin-punto-xyz', headers: AUTH_MOD, body: { verified: true }, clientIp: IP_N });
+  check('N4 moderador sobre un punto inexistente → 404', n4.status === 404 && sameText(n4.body?.error, 'Punto de ayuda no encontrado.'), `status=${n4.status} ${JSON.stringify(n4.body)}`);
+
+  const n5 = await call(pointsHandler, { method: 'PATCH', path: `/points/${nPointId}`, headers: AUTH_MOD, body: {}, clientIp: IP_N });
+  check('N5 PATCH vacío → 400 de moderación con detalles', n5.status === 400 && sameText(n5.body?.error, 'Datos de moderación inválidos.') && Array.isArray(n5.body?.details) && n5.body.details.length > 0, `status=${n5.status} ${JSON.stringify(n5.body)}`);
+
+  const n6 = await call(pointsHandler, { method: 'PATCH', path: `/points/${nPointId}`, headers: AUTH_MOD, body: { name: 'otro campo' }, clientIp: IP_N });
+  check('N6 otra clave en el cuerpo → 400 (solo admite verified)', n6.status === 400 && Array.isArray(n6.body?.details) && n6.body.details.some((d) => d.includes('solo admite')), `status=${n6.status} ${JSON.stringify(n6.body)}`);
+
+  const n7 = await call(pointsHandler, { method: 'PATCH', path: `/points/${nPointId}`, headers: AUTH_MOD, body: { verified: 'si' }, clientIp: IP_N });
+  check('N7 verified que no es booleano → 400 (nunca se corrige en silencio)', n7.status === 400 && Array.isArray(n7.body?.details) && n7.body.details.some((d) => d.includes('verdadero o falso')), `status=${n7.status} ${JSON.stringify(n7.body)}`);
+
+  const n8 = await call(pointsHandler, { method: 'PATCH', path: `/points/${nPointId}`, headers: AUTH_MOD, body: { verified: true }, clientIp: IP_N });
+  check('N8 moderador marca verified → 200 y el punto queda verificado', n8.status === 200 && n8.body?.point?.id === nPointId && n8.body?.point?.verified === true, `status=${n8.status} verified=${n8.body?.point?.verified}`);
+
+  const n9 = await call(pointsHandler, { method: 'PATCH', path: `/points/${nPointId}`, headers: AUTH_MOD, body: { verified: false }, clientIp: IP_N });
+  check('N9 moderador desmarca verified → 200 y queda en false', n9.status === 200 && n9.body?.point?.verified === false, `status=${n9.status} verified=${n8.body?.point?.verified}`);
+
+  // El autor NO puede marcarse como verificado con su propio PUT (T7/T28).
+  const n10 = await call(pointsHandler, { method: 'PUT', path: `/points/${nPointId}`, headers: AUTH_N, body: { verified: true }, clientIp: IP_N });
+  check('N10 PUT del autor SOLO con verified → 400 (campo no editable)', n10.status === 400 && sameText(n10.body?.error, 'Datos de punto inválidos.'), `status=${n10.status} ${JSON.stringify(n10.body)}`);
+
+  const n11 = await call(pointsHandler, { method: 'PUT', path: `/points/${nPointId}`, headers: AUTH_N, body: { name: 'Punto renombrado por su autor', verified: true }, clientIp: IP_N });
+  check('N11 PUT del autor con nombre+verified → 200 sin tocar verified', n11.status === 200 && n11.body?.point?.name === 'Punto renombrado por su autor' && n11.body?.point?.verified === false, `status=${n11.status} verified=${n11.body?.point?.verified}`);
+
+  // Lista blanca `MODERATOR_USER_IDS` (CSV de subs de Clerk): habilita a una
+  // cuenta sin rol sin tocar la plantilla JWT de Clerk.
+  process.env.MODERATOR_USER_IDS = 'user_nuc_other';
+  const n12 = await call(pointsHandler, { method: 'PATCH', path: `/points/${nPointId}`, headers: AUTH_N_OTHER, body: { verified: true }, clientIp: IP_N });
+  process.env.MODERATOR_USER_IDS = '';
+  check('N12 MODERATOR_USER_IDS habilita a esa cuenta → 200 (y queda verified)', n12.status === 200 && n12.body?.point?.verified === true, `status=${n12.status} verified=${n12.body?.point?.verified}`);
+
+  // --- POST /reports: identidad del JWT, validación y dedup ---
+  const r1 = await call(reportsHandler, { method: 'POST', path: '/reports', body: { entityType: 'point', entityId: nPointId, reason: 'Prueba sin sesión' }, clientIp: IP_N });
+  check('N13 POST /reports sin sesión → 401', r1.status === 401 && sameText(r1.body?.error, SIN_SESION_REPORT), `status=${r1.status} ${JSON.stringify(r1.body)}`);
+
+  const r2 = await call(reportsHandler, { method: 'POST', path: '/reports', headers: AUTH_N, body: { entityType: 'lugar', entityId: nPointId, reason: 'Tipo inventado' }, clientIp: IP_N });
+  check('N14 entityType fuera de point|need → 400 con detalles', r2.status === 400 && sameText(r2.body?.error, 'Reporte inválido.') && Array.isArray(r2.body?.details) && r2.body.details.some((d) => d.includes('point | need')), `status=${r2.status} ${JSON.stringify(r2.body)}`);
+
+  const r3 = await call(reportsHandler, { method: 'POST', path: '/reports', headers: AUTH_N, body: { entityType: 'point', entityId: nPointId, reason: 'ab' }, clientIp: IP_N });
+  check('N15 motivo demasiado corto → 400', r3.status === 400 && Array.isArray(r3.body?.details) && r3.body.details.some((d) => d.includes('mínimo 3 caracteres')), `status=${r3.status} ${JSON.stringify(r3.body)}`);
+
+  const r4 = await call(reportsHandler, { method: 'POST', path: '/reports', headers: AUTH_N, body: { entityType: 'point', entityId: 'punto-fantasma', reason: 'No existe' }, clientIp: IP_N });
+  check('N16 entidad inexistente → 400 accionable', r4.status === 400 && sameText(r4.body?.error, 'La entidad indicada no existe.'), `status=${r4.status} ${JSON.stringify(r4.body)}`);
+
+  const r5 = await call(reportsHandler, {
+    method: 'POST',
+    path: '/reports',
+    headers: AUTH_N,
+    // El reporterId del cuerpo se IGNORA: la identidad sale del JWT.
+    body: { entityType: 'point', entityId: nPointId, reason: 'Contenido sospechoso en la ficha', reporterId: 'user_intruso' },
+    clientIp: IP_N,
+  });
+  check('N17 reporte válido → 201 con reporterId SOLO del JWT', r5.status === 201 && r5.body?.report?.id?.startsWith('rep-') === true && r5.body?.report?.entityType === 'point' && r5.body?.report?.entityId === nPointId && r5.body?.report?.reporterId === 'user_nuc_author' && r5.body?.report?.reason === 'Contenido sospechoso en la ficha', `status=${r5.status} ${JSON.stringify(r5.body)}`);
+
+  const r6 = await call(reportsHandler, { method: 'POST', path: '/reports', headers: AUTH_N, body: { entityType: 'point', entityId: nPointId, reason: 'Otra vez el mismo reporte' }, clientIp: IP_N });
+  check('N18 repetir el MISMO reporte → 200 idempotente con duplicate: true', r6.status === 200 && r6.body?.duplicate === true && r6.body?.report?.id === r5.body?.report?.id, `status=${r6.status} ${JSON.stringify(r6.body)}`);
+
+  const r7 = await call(reportsHandler, { method: 'POST', path: '/reports', headers: AUTH_N, body: { entityType: 'need', entityId: nNeedId, reason: 'Datos personales expuestos' }, clientIp: IP_N });
+  check('N19 otra entidad SÍ crea un reporte nuevo (201)', r7.status === 201 && r7.body?.report?.entityType === 'need' && r7.body?.report?.entityId === nNeedId, `status=${r7.status}`);
+
+  // --- GET /reports: solo moderación, siempre paginada ---
+  const gn1 = await call(reportsHandler, { path: '/reports', clientIp: IP_N });
+  check('N20 GET /reports sin sesión → 401', gn1.status === 401 && sameText(gn1.body?.error, SIN_SESION_COLA), `status=${gn1.status} ${JSON.stringify(gn1.body)}`);
+
+  const gn2 = await call(reportsHandler, { path: '/reports', headers: AUTH_N, clientIp: IP_N });
+  check('N21 GET /reports como ciudadano → 403 de moderación', gn2.status === 403 && sameText(gn2.body?.error, SIN_MODERACION), `status=${gn2.status} ${JSON.stringify(gn2.body)}`);
+
+  const gn2b = await call(reportsHandler, { path: '/reports', headers: AUTH_CIUDADANO_ROL, clientIp: IP_N });
+  check('N21b rol ciudadano EXPLÍCITO en GET /reports → 403', gn2b.status === 403 && sameText(gn2b.body?.error, SIN_MODERACION), `status=${gn2b.status} ${JSON.stringify(gn2b.body)}`);
+
+  const gn3 = await call(reportsHandler, { path: '/reports', headers: AUTH_MOD, clientIp: IP_N });
+  check('N22 GET /reports como moderador → 200 con la cola paginada', gn3.status === 200 && Array.isArray(gn3.body?.reports) && gn3.body.reports.length === 2 && gn3.body?.page === 1 && gn3.body?.limit === 20 && gn3.body?.total === 2 && gn3.body?.totalPages === 1 && gn3.body?.source === 'memory_cache', `status=${gn3.status} ${JSON.stringify(gn3.body)}`);
+
+  const gn4 = await call(reportsHandler, { path: '/reports', query: { page: '2', limit: '1' }, headers: AUTH_MOD, clientIp: IP_N });
+  check('N23 paginación: página 2 con limit 1 trae el reporte más antiguo', gn4.status === 200 && gn4.body?.reports?.length === 1 && gn4.body?.reports?.[0]?.entityType === 'point' && gn4.body?.page === 2 && gn4.body?.total === 2 && gn4.body?.totalPages === 2, `status=${gn4.status} ${JSON.stringify(gn4.body)}`);
+
+  // El rol también puede llegar por `public_metadata.role` (2.º camino).
+  const JWT_MOD_META = mintJwt({ sub: 'user_nuc_mod_meta', publicMetadata: { role: 'coordinador' } });
+  const gn5 = await call(reportsHandler, { path: '/reports', headers: { authorization: `Bearer ${JWT_MOD_META}` }, clientIp: IP_N });
+  check('N24 el rol por public_metadata.role también da acceso → 200', gn5.status === 200 && Array.isArray(gn5.body?.reports), `status=${gn5.status}`);
+
+  // --- Borrado: los reportes se van con su entidad (CASCADE en caché) ---
+  const d1 = await call(pointsHandler, { method: 'DELETE', path: `/points/${nPointId}`, headers: AUTH_N, clientIp: IP_N });
+  check('N25 DELETE del punto purga sus reportes de la caché', d1.status === 200 && !memory.reports.some((r) => r.entityType === 'point' && r.entityId === nPointId) && memory.reports.some((r) => r.entityType === 'need' && r.entityId === nNeedId), `status=${d1.status} reports=${memory.reports.length}`);
+
+  const d2 = await call(needsHandler, { method: 'DELETE', path: `/needs/${nNeedId}`, headers: AUTH_N, clientIp: IP_N });
+  check('N26 DELETE de la necesidad purga también los suyos', d2.status === 200 && memory.reports.length === 0, `status=${d2.status} reports=${memory.reports.length}`);
+
   /* --------------- M. Contrato Express ↔ funciones Vercel (MEJ-01 + BUGs) */
   // Escenarios idénticos ejecutados contra LOS DOS adaptadores: Express
   // (HTTP real contra `server/app.ts`) y las funciones de Vercel (`api/*.ts`
@@ -681,6 +838,10 @@ try {
     '/api/needs-support': (await vite.ssrLoadModule('/api/needs-support.ts')).default,
     '/api/needs': (await vite.ssrLoadModule('/api/needs.ts')).default,
     '/api/support-mine': (await vite.ssrLoadModule('/api/support-mine.ts')).default,
+    '/api/points': (await vite.ssrLoadModule('/api/points.ts')).default,
+    // T28: la función de comentarios despacha también `/api/reports`
+    // (rewrite `?_orig=reports` de `vercel.json`).
+    '/api/comments': (await vite.ssrLoadModule('/api/comments.ts')).default,
   };
 
   /** Petición HTTP real al servidor Express de esta sección. */
@@ -699,7 +860,7 @@ try {
     } catch {
       /* sin JSON se compara el texto crudo */
     }
-    return { status: response.status, body: parsed };
+    return { status: response.status, body: parsed, headers: response.headers };
   }
 
   /**
@@ -718,21 +879,23 @@ try {
       req.body = body;
     }
     await handler(req, res);
-    return { status: res.statusCode, body: res.body };
+    return { status: res.statusCode, body: res.body, res };
   }
 
   /**
    * Ejecuta el mismo escenario en ambos adaptadores: el contrato exige el
    * MISMO status y el MISMO cuerpo (JSON idéntico). `expectativa(result)`,
    * si se pasa, debe cumplirse en LAS DOS respuestas (devuelve `true` o un
-   * detalle del fallo).
+   * detalle del fallo). `normaliza(body)` (opcional) iguala campos que cada
+   * adaptador rellena con su propio reloj/UUID — p. ej. `updatedAt` de un
+   * PATCH — para comparar el resto del cuerpo.
    */
-  async function contrato(name, spec, expectativa) {
+  async function contrato(name, spec, expectativa, normaliza = (body) => body) {
     const viaExpress = await callExpress(spec);
     const viaVercel = await callVercel(spec);
     let ok =
       viaExpress.status === viaVercel.status &&
-      JSON.stringify(viaExpress.body) === JSON.stringify(viaVercel.body);
+      JSON.stringify(normaliza(viaExpress.body)) === JSON.stringify(normaliza(viaVercel.body));
     let detail = `express=${viaExpress.status} vercel=${viaVercel.status}`;
     if (typeof expectativa === 'function') {
       for (const [side, result] of [
@@ -895,6 +1058,100 @@ try {
         : `count=0 esperado, llegó ${r.status} ${JSON.stringify(r.body)}`,
   );
 
+  // --- T28 · verify y cola de reportes: paridad Express ↔ `/api/reports` ---
+  // En modo memoria (antes de M11): los dos adaptadores leen las mismas
+  // filas de la caché, que es lo único comparable celda a celda.
+  const m19 = await call(pointsHandler, {
+    method: 'POST',
+    path: '/points',
+    headers: AUTH_AUTHOR,
+    body: { id: 'contrato-point-1', name: 'Punto de la cola', lat: 3.45, lng: -76.55, address: 'Calle 5 # 4-6', barrio: 'San Antonio' },
+    clientIp: IP_M,
+  });
+  check(
+    'M19 semilla T28: POST /points crea el punto de la cola (201)',
+    m19.status === 201 && m19.body?.point?.id === 'contrato-point-1',
+    `status=${m19.status} ${JSON.stringify(m19.body)}`,
+  );
+
+  const m20 = await call(reportsHandler, {
+    method: 'POST',
+    path: '/reports',
+    headers: AUTH_AUTHOR,
+    body: { entityType: 'need', entityId: contratoNeed, reason: 'Reporte semilla del contrato' },
+    clientIp: IP_M,
+  });
+  check(
+    'M20 semilla T28: POST /reports crea el reporte (201)',
+    m20.status === 201 && m20.body?.report?.entityType === 'need',
+    `status=${m20.status} ${JSON.stringify(m20.body)}`,
+  );
+
+  // Cada adaptador escribe su propio `updatedAt`, así que solo se ignora
+  // ese campo al comparar el resto del cuerpo.
+  await contrato(
+    'M21 T28 contrato: PATCH verify del moderador → 200 idéntico en ambos',
+    {
+      method: 'PATCH',
+      path: '/api/points/contrato-point-1',
+      vurl: '/api/points?_orig=points/contrato-point-1&id=contrato-point-1',
+      headers: AUTH_MOD,
+      body: { verified: true },
+    },
+    (r) =>
+      r.status === 200 && r.body?.point?.verified === true
+        ? true
+        : `200 con verified esperados, llegó ${r.status} ${JSON.stringify(r.body)}`,
+    (body) => (body?.point ? { point: { ...body.point, updatedAt: null } } : body),
+  );
+
+  await contrato(
+    'M22 T28 contrato: POST /reports repetido → 200 + duplicate idéntico en ambos',
+    {
+      method: 'POST',
+      path: '/api/reports',
+      vurl: '/api/comments?_orig=reports',
+      headers: AUTH_AUTHOR,
+      body: { entityType: 'need', entityId: contratoNeed, reason: 'Reporte semilla del contrato' },
+    },
+    (r) =>
+      r.status === 200 && r.body?.duplicate === true && typeof r.body?.report?.id === 'string'
+        ? true
+        : `200 + duplicate esperados, llegó ${r.status} ${JSON.stringify(r.body)}`,
+  );
+
+  await contrato(
+    'M23 T28 contrato: GET /reports como moderador → la misma cola paginada',
+    { method: 'GET', path: '/api/reports', vurl: '/api/comments?_orig=reports', headers: AUTH_MOD },
+    (r) =>
+      r.status === 200 && Array.isArray(r.body?.reports) && r.body?.total === 1 && r.body?.source === 'memory_cache'
+        ? true
+        : `200 con la cola esperada, llegó ${r.status} ${JSON.stringify(r.body)}`,
+  );
+
+  await contrato(
+    'M24 T28 contrato: POST /reports sin sesión → 401 idéntico en ambos',
+    {
+      method: 'POST',
+      path: '/api/reports',
+      vurl: '/api/comments?_orig=reports',
+      body: { entityType: 'point', entityId: 'contrato-point-1', reason: 'Sin sesión' },
+    },
+    (r) =>
+      r.status === 401 && sameText(r.body?.error, SIN_SESION_REPORT)
+        ? true
+        : `401 esperado, llegó ${r.status} ${JSON.stringify(r.body)}`,
+  );
+
+  await contrato(
+    'M25 T28 contrato: GET /reports como ciudadano → 403 idéntico en ambos',
+    { method: 'GET', path: '/api/reports', vurl: '/api/comments?_orig=reports', headers: AUTH_AUTHOR },
+    (r) =>
+      r.status === 403 && sameText(r.body?.error, SIN_MODERACION)
+        ? true
+        : `403 esperado, llegó ${r.status} ${JSON.stringify(r.body)}`,
+  );
+
   // --- BUG-01 · con BD: escritura NO confirmada → 503, nunca caché ---
   // El cliente de Supabase se crea apuntando al stub del fetch global
   // (`supabaseStub`): la RPC de apoyos lanzará `fetch failed` (transitoria).
@@ -993,6 +1250,216 @@ try {
       r.status === 200 && r.body?.count === EXACT_COUNT && r.body?.supported === true
         ? true
         : `count=${EXACT_COUNT} esperado, llegó ${r.status} ${JSON.stringify(r.body)}`,
+  );
+
+  /* ------- S. Semilla única (T29), cabeceras (T32) y X-Robots-Tag (T39) --- */
+  // T29 · `src/data/initialData.ts` es la fuente de verdad del respaldo y
+  // `server/seedData.ts` una copia verbatim (no puede importarla: las
+  // funciones de Vercel no reescriben los especificadores — decisión
+  // 2026-09-30). Este bloque es la garantía de que la copia no diverge:
+  // cualquier cambio en un solo lado deja la suite en ROJO.
+  const frontSeed = await vite.ssrLoadModule('/src/data/initialData.ts');
+  const serverSeed = await vite.ssrLoadModule('/server/seedData.ts');
+  const mismoJSON = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+
+  check(
+    'S1 T29 los 32 puntos del servidor son idénticos a los del cliente',
+    mismoJSON(serverSeed.INITIAL_HELP_POINTS, frontSeed.INITIAL_HELP_POINTS),
+    `server=${serverSeed.INITIAL_HELP_POINTS.length} front=${frontSeed.INITIAL_HELP_POINTS.length}`,
+  );
+  check(
+    'S2 T29 las 6 necesidades del servidor son idénticas a las del cliente',
+    mismoJSON(serverSeed.INITIAL_HELP_NEEDS, frontSeed.INITIAL_HELP_NEEDS),
+    `server=${serverSeed.INITIAL_HELP_NEEDS.length} front=${frontSeed.INITIAL_HELP_NEEDS.length}`,
+  );
+  check(
+    'S3 T29 los 4 comentarios del servidor son idénticos a los del cliente',
+    mismoJSON(serverSeed.INITIAL_COMMENTS, frontSeed.INITIAL_POINT_COMMENTS),
+    `server=${serverSeed.INITIAL_COMMENTS.length} front=${frontSeed.INITIAL_POINT_COMMENTS.length}`,
+  );
+  check(
+    'S4 T29 el contrato del dataset es 32 puntos / 6 necesidades / 4 comentarios en AMBOS lados',
+    frontSeed.INITIAL_HELP_POINTS.length === 32 && serverSeed.INITIAL_HELP_POINTS.length === 32 &&
+      frontSeed.INITIAL_HELP_NEEDS.length === 6 && serverSeed.INITIAL_HELP_NEEDS.length === 6 &&
+      frontSeed.INITIAL_POINT_COMMENTS.length === 4 && serverSeed.INITIAL_COMMENTS.length === 4,
+    `front=${frontSeed.INITIAL_HELP_POINTS.length}/${frontSeed.INITIAL_HELP_NEEDS.length}/${frontSeed.INITIAL_POINT_COMMENTS.length}` +
+      ` server=${serverSeed.INITIAL_HELP_POINTS.length}/${serverSeed.INITIAL_HELP_NEEDS.length}/${serverSeed.INITIAL_COMMENTS.length}`,
+  );
+
+  // Contadores: los del dataset son enteros ≥ 0 y la caché en memoria (lo
+  // que pinta el respaldo sin BD) muestra exactamente esos números.
+  const contadores = serverSeed.INITIAL_HELP_NEEDS.map((n) => n.supportersCount);
+  check(
+    'S5 T29 los 6 contadores son enteros ≥ 0',
+    contadores.every((c) => Number.isInteger(c) && c >= 0),
+    JSON.stringify(contadores),
+  );
+  const contadoresEnMemoria = serverSeed.INITIAL_HELP_NEEDS.every((n) => {
+    const fila = memory.needs.find((item) => item.id === n.id);
+    return fila !== undefined && fila.supportersCount === n.supportersCount;
+  });
+  check(
+    'S6 T29 la caché en memoria pinta los MISMOS contadores que el dataset',
+    contadoresEnMemoria,
+    serverSeed.INITIAL_HELP_NEEDS.map((n) => `${n.id}=${n.supportersCount}`).join(' '),
+  );
+  check(
+    'S7 T29 contrato de apoyos: 18/34/22/45/15/52 (186 filas en una BD nueva)',
+    mismoJSON(contadores, [18, 34, 22, 45, 15, 52]),
+    `llegaron ${JSON.stringify(contadores)} (si cambió el dataset, cambia también la semilla de apoyos)`,
+  );
+
+  // Reglas puras de la siembra de `need_supporters` (el contador real).
+  const { supporterRowsToSeed, supporterSeedId } = await vite.ssrLoadModule('/server/seedSupporters.ts');
+  const planVacío = serverSeed.INITIAL_HELP_NEEDS.map((n) => supporterRowsToSeed(n.id, n.supportersCount, 0));
+  check(
+    'S8 T29 semilla: BD vacía → EXACTAMENTE supportersCount filas por necesidad',
+    planVacío.every((rows, i) => rows.length === serverSeed.INITIAL_HELP_NEEDS[i].supportersCount) &&
+      planVacío.every((rows, i) => rows.every((r) => r.need_id === serverSeed.INITIAL_HELP_NEEDS[i].id)),
+    `total=${planVacío.reduce((sum, rows) => sum + rows.length, 0)} filas (esperado 186)`,
+  );
+  check(
+    'S9 T29 semilla: los ids son deterministas y no se repiten dentro de una necesidad',
+    planVacío.every((rows, i) =>
+      rows.every((r, index) => r.user_id === supporterSeedId(serverSeed.INITIAL_HELP_NEEDS[i].id, index + 1)) &&
+      new Set(rows.map((r) => r.user_id)).size === rows.length,
+    ),
+    planVacío[0]?.[0]?.user_id ?? '(sin filas)',
+  );
+  check(
+    'S10 T29 semilla: una BD con apoyos reales NUNCA se infla con filas de mentira',
+    serverSeed.INITIAL_HELP_NEEDS.every((n) => supporterRowsToSeed(n.id, n.supportersCount, 1).length === 0),
+    'existing=1 → 0 filas en las 6',
+  );
+  check(
+    'S11 T29 semilla: una necesidad sin apoyos prometidos no siembra nada',
+    supporterRowsToSeed('need-x', 0, 0).length === 0 && supporterRowsToSeed('need-x', -1, 0).length === 0,
+  );
+
+  // T32 · paridad local/Docker con las cabeceras que manda `vercel.json`.
+  const vercelCfg = JSON.parse(readFileSync(join(root, 'vercel.json'), 'utf8'));
+  const bloqueRoot = (vercelCfg.headers ?? []).find((entry) => entry.source === '/');
+  const valorVercel = (key) => (bloqueRoot?.headers ?? []).find((h) => h.key === key)?.value;
+  const { CONTENT_SECURITY_POLICY, relaxCspForViteDev, setApiRobotsHeaders, setSecurityHeaders } =
+    await vite.ssrLoadModule('/server/http.ts');
+
+  check(
+    'S12 T32 la CSP del servidor es CARÁCTER A CARÁCTER la del bloque `/` de vercel.json',
+    CONTENT_SECURITY_POLICY === valorVercel('Content-Security-Policy'),
+    `server=${CONTENT_SECURITY_POLICY.length} vercel=${String(valorVercel('Content-Security-Policy')).length} caracteres`,
+  );
+
+  const cabecerasVercel = [
+    'Content-Security-Policy',
+    'X-Content-Type-Options',
+    'X-Frame-Options',
+    'Referrer-Policy',
+    'Permissions-Policy',
+  ];
+  const resSeg = fakeRes();
+  setSecurityHeaders(resSeg);
+  const distintas = cabecerasVercel.filter((key) => resSeg.getHeader(key) !== valorVercel(key));
+  check(
+    'S13 T32 setSecurityHeaders replica las 5 cabeceras de vercel.json (mismo valor)',
+    distintas.length === 0,
+    `difieren: ${distintas.join(', ') || 'ninguna'}`,
+  );
+  check(
+    'S14 T32 además Cross-Origin-Opener-Policy: same-origin (solo el adaptador de API)',
+    resSeg.getHeader('Cross-Origin-Opener-Policy') === 'same-origin',
+    `got=${resSeg.getHeader('Cross-Origin-Opener-Policy')}`,
+  );
+
+  const { securityHeaders } = await vite.ssrLoadModule('/server/middleware.ts');
+  const resMw = fakeRes();
+  let mwSigo = false;
+  securityHeaders({}, resMw, () => { mwSigo = true; });
+  check(
+    'S15 T32 el middleware securityHeaders aplica el set y sigue la cadena',
+    mwSigo && resMw.getHeader('Content-Security-Policy') === CONTENT_SECURITY_POLICY,
+    `next=${mwSigo} csp=${String(resMw.getHeader('Content-Security-Policy')).slice(0, 40)}…`,
+  );
+
+  // Por HTTP real contra Express (el mismo pipeline que corre en local/Docker).
+  const health = await callExpress({ path: '/api/health' });
+  const paresCabeceras = [
+    ['content-security-policy', 'Content-Security-Policy'],
+    ['x-content-type-options', 'X-Content-Type-Options'],
+    ['x-frame-options', 'X-Frame-Options'],
+    ['referrer-policy', 'Referrer-Policy'],
+    ['permissions-policy', 'Permissions-Policy'],
+  ];
+  const malas = paresCabeceras.filter(([httpKey, vercelKey]) => health.headers?.get(httpKey) !== valorVercel(vercelKey));
+  check(
+    'S16 T32 Express local responde /api/health con las MISMAS cabeceras que vercel.json',
+    health.status === 200 && malas.length === 0,
+    `status=${health.status} distintas=${malas.map(([k]) => k).join(',') || 'ninguna'}`,
+  );
+  check(
+    'S17 T32 …y con Cross-Origin-Opener-Policy: same-origin en la respuesta HTTP',
+    health.headers?.get('cross-origin-opener-policy') === 'same-origin',
+    `got=${health.headers?.get('cross-origin-opener-policy')}`,
+  );
+
+  // La ÚNICA relajación de la CSP: el HTML de `npm run dev`, que Vite
+  // reescribe con un `<script type="module">` inline (preamble de
+  // react-refresh) y cuyo HMR habla por websocket. Ningún otro proceso
+  // (humo, tests, producción) la aplica.
+  const cspDev = relaxCspForViteDev(CONTENT_SECURITY_POLICY);
+  check(
+    'S18 T32 la CSP de desarrollo deja pasar el preamble inline de react-refresh',
+    cspDev.includes("script-src 'self' 'unsafe-inline'") && cspDev !== CONTENT_SECURITY_POLICY,
+    `script-src con unsafe-inline=${cspDev.includes("script-src 'self' 'unsafe-inline'")}`,
+  );
+  check(
+    'S19 T32 …y solo toca script-src (preamble) y connect-src (HMR): el resto es idéntico',
+    cspDev.includes("connect-src 'self' ws:") &&
+      cspDev.replace(" 'unsafe-inline'", '').replace(' ws:', '') === CONTENT_SECURITY_POLICY,
+    'relajadas: script-src += unsafe-inline · connect-src += ws:',
+  );
+
+  // T39 · SEO-15: la API JSON no debe indexarse, el HTML de la SPA sí. La
+  // cabecera vive FUERA de `setSecurityHeaders` (compartido API+HTML de T32),
+  // por eso lo primero es comprobar que ese set NO la arrastra.
+  check(
+    'S20 T39 setSecurityHeaders (compartido con el HTML) NO pone X-Robots-Tag',
+    resSeg.getHeader('x-robots-tag') === undefined,
+    `got=${resSeg.getHeader('x-robots-tag')}`,
+  );
+  const resRobots = fakeRes();
+  setApiRobotsHeaders(resRobots);
+  check(
+    'S21 T39 setApiRobotsHeaders pone EXACTAMENTE X-Robots-Tag: noindex',
+    resRobots.getHeader('x-robots-tag') === 'noindex' &&
+      resRobots.getHeader('content-security-policy') === undefined,
+    `got=${resRobots.getHeader('x-robots-tag')} (y sin cabeceras de T32)`,
+  );
+
+  // Por HTTP real (mismo pipeline que corre en local/Docker) y contra el
+  // adaptador de funciones de Vercel.
+  const robotsHealth = await callExpress({ path: '/api/health' });
+  check(
+    'S22 T39 Express local responde /api/health con X-Robots-Tag: noindex',
+    robotsHealth.status === 200 && robotsHealth.headers?.get('x-robots-tag') === 'noindex',
+    `status=${robotsHealth.status} got=${robotsHealth.headers?.get('x-robots-tag')}`,
+  );
+  const robots404 = await callExpress({ path: '/api/ruta-inexistente' });
+  check(
+    'S23 T39 …también el 404 de una ruta de API inexistente',
+    robots404.status === 404 && robots404.headers?.get('x-robots-tag') === 'noindex',
+    `status=${robots404.status} got=${robots404.headers?.get('x-robots-tag')}`,
+  );
+  const robotsRoot = await callExpress({ path: '/' });
+  check(
+    'S24 T39 el HTML de `/` NO lleva X-Robots-Tag (se desindexaría la SPA)',
+    robotsRoot.headers?.get('x-robots-tag') == null,
+    `status=${robotsRoot.status} got=${robotsRoot.headers?.get('x-robots-tag')}`,
+  );
+  const robotsVercel = await callVercel({ method: 'GET', vurl: '/api/points' });
+  check(
+    'S25 T39 la función de Vercel responde /api/points con X-Robots-Tag: noindex',
+    robotsVercel.status === 200 && robotsVercel.res?.getHeader('x-robots-tag') === 'noindex',
+    `status=${robotsVercel.status} got=${robotsVercel.res?.getHeader('x-robots-tag')}`,
   );
 
   expressServer.closeAllConnections?.();

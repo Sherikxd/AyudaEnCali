@@ -4,9 +4,28 @@
   "installCommand": "npm install",
   "buildCommand": "npm run lint && VITE_CLERK_PUBLISHABLE_KEY=\"${VITE_CLERK_PUBLISHABLE_KEY:-pk_test_Y2xlcmsuZXhhbXBsZS5jb20k}\" npm run test:ui && vite build",
   "outputDirectory": "dist",
+  "redirects": [
+    {
+      "source": "/(.*)",
+      "has": [
+        {
+          "type": "host",
+          "value": "ayuda-en-cali\\.vercel\\.app"
+        }
+      ],
+      "destination": "https://www.ayudaencali.lat/$1",
+      "permanent": true
+    }
+  ],
   "rewrites": [
-    { "source": "/api/supabase/sql", "destination": "/api/sql?_orig=supabase/sql" },
-    { "source": "/api/support/mine", "destination": "/api/support-mine?_orig=support/mine" },
+    {
+      "source": "/api/supabase/sql",
+      "destination": "/api/sql?_orig=supabase/sql"
+    },
+    {
+      "source": "/api/support/mine",
+      "destination": "/api/support-mine?_orig=support/mine"
+    },
     {
       "source": "/api/needs/:id/support",
       "destination": "/api/needs-support?_orig=needs/:id/support&id=:id"
@@ -19,7 +38,14 @@
       "source": "/api/points/:id",
       "destination": "/api/points?_orig=points/:id&id=:id"
     },
-    { "source": "/api/:path*", "destination": "/api/index?_orig=:path" }
+    {
+      "source": "/api/reports",
+      "destination": "/api/comments?_orig=reports"
+    },
+    {
+      "source": "/api/:path*",
+      "destination": "/api/index?_orig=:path"
+    }
   ],
   "headers": [
     {
@@ -29,9 +55,18 @@
           "key": "Content-Security-Policy",
           "value": "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'self'; form-action 'self' https://*.clerk.accounts.dev https://*.clerk.dev https://*.clerk.com; script-src 'self' https://*.clerk.accounts.dev https://*.clerk.dev https://*.clerk.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' data: https://fonts.gstatic.com; img-src 'self' data: blob: https://res.cloudinary.com https://*.tile.openstreetmap.org https://server.arcgisonline.com https://img.clerk.com https://*.clerk.com https://*.clerk.accounts.dev https://*.clerk.dev; connect-src 'self' https://nominatim.openstreetmap.org https://fonts.googleapis.com https://*.clerk.accounts.dev https://*.clerk.dev https://*.clerk.com https://clerk-telemetry.com; frame-src 'self' https://*.clerk.accounts.dev https://*.clerk.dev https://*.clerk.com; worker-src 'self' blob:; manifest-src 'self'; media-src 'self' blob: data:"
         },
-        { "key": "X-Content-Type-Options", "value": "nosniff" },
-        { "key": "X-Frame-Options", "value": "SAMEORIGIN" },
-        { "key": "Referrer-Policy", "value": "strict-origin-when-cross-origin" },
+        {
+          "key": "X-Content-Type-Options",
+          "value": "nosniff"
+        },
+        {
+          "key": "X-Frame-Options",
+          "value": "SAMEORIGIN"
+        },
+        {
+          "key": "Referrer-Policy",
+          "value": "strict-origin-when-cross-origin"
+        },
         {
           "key": "Permissions-Policy",
           "value": "camera=(), microphone=(), geolocation=(self), payment=(), usb=()"
@@ -39,18 +74,76 @@
       ]
     },
     {
+      "source": "/:path((?!api(?:/|$)).+)",
+      "headers": [
+        {
+          "key": "Content-Security-Policy",
+          "value": "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'self'; form-action 'self' https://*.clerk.accounts.dev https://*.clerk.dev https://*.clerk.com; script-src 'self' https://*.clerk.accounts.dev https://*.clerk.dev https://*.clerk.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' data: https://fonts.gstatic.com; img-src 'self' data: blob: https://res.cloudinary.com https://*.tile.openstreetmap.org https://server.arcgisonline.com https://img.clerk.com https://*.clerk.com https://*.clerk.accounts.dev https://*.clerk.dev; connect-src 'self' https://nominatim.openstreetmap.org https://fonts.googleapis.com https://*.clerk.accounts.dev https://*.clerk.dev https://*.clerk.com https://clerk-telemetry.com; frame-src 'self' https://*.clerk.accounts.dev https://*.clerk.dev https://*.clerk.com; worker-src 'self' blob:; manifest-src 'self'; media-src 'self' blob: data:"
+        },
+        {
+          "key": "X-Content-Type-Options",
+          "value": "nosniff"
+        },
+        {
+          "key": "X-Frame-Options",
+          "value": "SAMEORIGIN"
+        },
+        {
+          "key": "Referrer-Policy",
+          "value": "strict-origin-when-cross-origin"
+        },
+        {
+          "key": "Permissions-Policy",
+          "value": "camera=(), microphone=(), geolocation=(self), payment=(), usb=()"
+        }
+      ]
+    },
+    {
+      "source": "/sw.js",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "no-cache"
+        }
+      ]
+    },
+    {
+      "source": "/manifest.webmanifest",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "no-cache"
+        }
+      ]
+    },
+    {
       "source": "/assets/:path*",
       "headers": [
-        { "key": "Cache-Control", "value": "public, max-age=31536000, immutable" },
-        { "key": "X-Content-Type-Options", "value": "nosniff" },
-        { "key": "Referrer-Policy", "value": "strict-origin-when-cross-origin" }
+        {
+          "key": "Cache-Control",
+          "value": "public, max-age=31536000, immutable"
+        },
+        {
+          "key": "X-Content-Type-Options",
+          "value": "nosniff"
+        },
+        {
+          "key": "Referrer-Policy",
+          "value": "strict-origin-when-cross-origin"
+        }
       ]
     },
     {
       "source": "/(.*\\.(?:png|jpg|jpeg|webp|avif|svg|ico|woff2|woff))",
       "headers": [
-        { "key": "Cache-Control", "value": "public, max-age=604800" },
-        { "key": "X-Content-Type-Options", "value": "nosniff" }
+        {
+          "key": "Cache-Control",
+          "value": "public, max-age=604800"
+        },
+        {
+          "key": "X-Content-Type-Options",
+          "value": "nosniff"
+        }
       ]
     }
   ]

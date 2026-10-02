@@ -63,7 +63,13 @@ const MAP_LAYERS: Record<MapLayerType, { name: string; url: string; subdomains?:
 // 🏠 Casas para albergues
 // 🏥 Hospitales para emergencias médicas
 // 🚚 Camiones para donde están recogiendo ayuda
-const createMarkerIcon = (category: HelpCategory, isSelected: boolean = false, verified: boolean = false) => {
+/**
+ * Icono de un punto. `name` (el nombre del punto) se usa como nombre
+ * accesible del marcador: Leaflet crea un `<div>` (no un `<img>`), así que
+ * su `alt` de opciones no llega al DOM y el texto alternativo va en el
+ * `aria-label` del propio icono (SEO-11).
+ */
+const createMarkerIcon = (category: HelpCategory, isSelected: boolean = false, verified: boolean = false, name?: string) => {
   const configs = {
     acopio: {
       bg: 'bg-blue-600',
@@ -123,8 +129,10 @@ const createMarkerIcon = (category: HelpCategory, isSelected: boolean = false, v
 
   const c = configs[category] || configs.acopio;
 
+  const ariaLabel = `${name ? `${name} — ` : ''}${c.label}${verified ? ' (punto verificado)' : ''}`;
+
   const html = `
-    <div class="relative group cursor-pointer transition-transform duration-200">
+    <div class="relative group cursor-pointer transition-transform duration-200" aria-label="${escapeHtml(ariaLabel)}">
       <div class="w-10 h-10 rounded-2xl ${c.bg} ${c.border} ${c.shadow} flex items-center justify-center transition-all duration-200">
         ${c.svg}
       </div>
@@ -213,7 +221,7 @@ const createClusterIcon = (count: number) =>
   L.divIcon({
     className: 'custom-cali-cluster',
     html: `
-      <div class="flex items-center justify-center w-11 h-11 rounded-full bg-slate-900/85 text-white border-2 border-white shadow-lg shadow-slate-900/30">
+      <div class="flex items-center justify-center w-11 h-11 rounded-full bg-slate-900/85 text-white border-2 border-white shadow-lg shadow-slate-900/30" aria-label="${count} puntos de ayuda agrupados en esta zona">
         <span class="text-xs font-extrabold tabular-nums">${count}</span>
       </div>
     `,
@@ -224,7 +232,7 @@ const createClusterIcon = (count: number) =>
 const userLocationIcon = L.divIcon({
   className: 'user-location-pin',
   html: `
-    <div class="relative flex items-center justify-center">
+    <div class="relative flex items-center justify-center" aria-label="Tu ubicación en el mapa">
       <div class="w-7 h-7 rounded-full bg-blue-500/20 animate-ping absolute"></div>
       <div class="w-5 h-5 rounded-full bg-blue-600 border-2 border-white shadow-lg flex items-center justify-center">
         <div class="w-2 h-2 rounded-full bg-white"></div>
@@ -276,7 +284,11 @@ export const MapView: React.FC = () => {
   const tileLayerRef = useRef<L.TileLayer | null>(null);
 
   const [selectedCategory, setSelectedCategory] = useState<HelpCategory | 'all'>('all');
-  const [searchQuery, setSearchQuery] = useState('');
+  // Búsqueda inicial opcional desde la URL (`/?q=…`), útil para compartir una
+  // consulta del mapa; no se anuncia como un SearchAction de datos estructurados.
+  const [searchQuery, setSearchQuery] = useState(
+    () => new URLSearchParams(window.location.search).get('q') ?? '',
+  );
   /**
    * MEJ-02 · orden/filtro optativo por distancia: apagado por defecto para
    * conservar el orden actual; activo, lista y mapa muestran primero lo que
@@ -508,6 +520,8 @@ export const MapView: React.FC = () => {
         icon: userLocationIcon,
         zIndexOffset: 1000,
         draggable: true,
+        title: 'Tu ubicación en el mapa',
+        alt: 'Tu ubicación en el mapa',
       }).bindPopup(`
         <div class="p-2.5 text-xs min-w-[210px]">
           <div class="flex items-center justify-between gap-1 mb-1">
@@ -559,7 +573,7 @@ export const MapView: React.FC = () => {
     // filtrado): se pinta siempre suelto y en primer plano.
     if (selectedInList) {
       const selectedMarker = L.marker([selectedInList.lat, selectedInList.lng], {
-        icon: createMarkerIcon(selectedInList.category, true, selectedInList.verified),
+        icon: createMarkerIcon(selectedInList.category, true, selectedInList.verified, selectedInList.name),
         zIndexOffset: 500,
         title: selectedInList.name,
         alt: selectedInList.verified
@@ -598,7 +612,7 @@ export const MapView: React.FC = () => {
       const point = group.points[0];
       const isSelected = selectedInList?.id === point.id;
       const marker = L.marker([point.lat, point.lng], {
-        icon: createMarkerIcon(point.category, isSelected, point.verified),
+        icon: createMarkerIcon(point.category, isSelected, point.verified, point.name),
         zIndexOffset: isSelected ? 500 : 100,
         title: point.name,
         alt: point.verified ? `${point.name} (punto verificado)` : point.name,
@@ -678,6 +692,14 @@ export const MapView: React.FC = () => {
         onMouseDown={(e) => e.stopPropagation()}
         onTouchStart={(e) => e.stopPropagation()}
       >
+        {/* Título de la vista (H1): la pestaña por defecto necesita encabezado
+            propio con la keyword principal (SEO-07 · QW-02). */}
+        <div className="bg-white/95 backdrop-blur-md rounded-2xl shadow-lg shadow-slate-900/5 border border-slate-100 px-4 py-2.5">
+          <h1 className="text-sm font-extrabold text-slate-900 leading-tight">
+            Centros de acopio y albergues en Cali
+          </h1>
+        </div>
+
         {/* Top Search Bar & Mobile Action Buttons Row */}
         <div className="flex items-center gap-2 w-full">
           {/* Search Input */}

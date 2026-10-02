@@ -4,8 +4,8 @@
  *
  * El chat es la **única** ruta que antes no consultaba Supabase: su
  * `memory` es la semilla, así que en una función de Vercel (aislada por
- * módulo) anunciaba 3 necesidades aunque la BD tuviera las reales, o datos
- * inventados si la BD estaba caída. Este módulo carga el contexto igual que
+ * módulo) anunciaba las necesidades de la semilla aunque la BD tuviera las
+ * reales, o datos inventados si la BD estaba caída. Este módulo carga el contexto igual que
  * hacen `GET /api/points` y `GET /api/needs`, con una caducidad para no
  * disparar dos SELECT en cada pregunta.
  *

@@ -4,6 +4,7 @@ import { ClerkProvider } from '@clerk/clerk-react';
 import { resolveClerkPublishableKey } from './config/clerk.ts';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { applyConsent, readConsent } from './utils/consent.ts';
+import { logger } from './utils/logger.ts';
 import App from './App.tsx';
 import './index.css';
 
@@ -79,3 +80,23 @@ resolveClerkPublishableKey()
   .catch(() => {
     root.render(<MissingAuthNotice />);
   });
+
+/**
+ * PWA offline (T30): el Service Worker solo se registra en producción y si
+ * el navegador lo soporta. En desarrollo estorbaría (cachés viejas entre
+ * recargas) y `vite build` sirve `public/sw.js` tal cual.
+ */
+function registerServiceWorker(): void {
+  navigator.serviceWorker
+    .register('/sw.js')
+    .then(() => logger.debug('Service Worker registrado.'))
+    .catch((error: unknown) => logger.warn('No se pudo registrar el Service Worker.', error));
+}
+
+if (import.meta.env.PROD && 'serviceWorker' in navigator) {
+  if (document.readyState === 'complete') {
+    registerServiceWorker();
+  } else {
+    window.addEventListener('load', registerServiceWorker, { once: true });
+  }
+}

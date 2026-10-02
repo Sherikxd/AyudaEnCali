@@ -2,6 +2,8 @@ import type { IncomingHttpHeaders } from 'node:http';
 import { createClerkClient, verifyToken } from '@clerk/backend';
 import { errorMessage, logger } from './logger.js';
 import type { JsonResponder } from './http.js';
+import { isModerator, toUserRole } from './validation.js';
+import type { UserRole } from '../src/types/index.js';
 
 /**
  * Verificación de sesiones de Clerk en el servidor.
@@ -67,6 +69,12 @@ export interface AuthUser {
    * Si no viene, se resuelve con `resolveDisplayName`.
    */
   name?: string;
+  /**
+   * Rol efectivo **si el propio JWT lo trae** (T28): `role` de primer nivel
+   * o `public_metadata.role`. Sin claim → sin `role` → sin permisos de
+   * moderación (se falla cerrado, nunca se asume `coordinador`).
+   */
+  role?: UserRole;
 }
 
 /**
@@ -92,7 +100,11 @@ export async function getAuthenticatedUser(req: AuthRequest): Promise<AuthUser |
     const userId = payload?.sub;
     if (typeof userId !== 'string' || !userId) return null;
     const name = nameFromClaims(payload);
-    return name ? { userId, name } : { userId };
+    const role = roleFromClaims(payload);
+    const user: AuthUser = { userId };
+    if (name) user.name = name;
+    if (role) user.role = role;
+    return user;
   } catch (error) {
     // El detalle (p. ej. "nbf en el futuro", firma inválida) ayuda a
     // diagnosticar 401 en despliegues, pero no debe inundar el log.
@@ -144,6 +156,27 @@ function nameFromClaims(payload: unknown): string | undefined {
   const last = cleanName(claims.last_name);
   if (first && last) return `${first} ${last}`;
   return first ?? last;
+}
+
+/**
+ * Rol que trae el propio token de sesión (T28), si lo trae.
+ *
+ * Cadena de decisión:
+ *
+ *  1. `role` de primer nivel del JWT.
+ *  2. `public_metadata.role` — la plantilla JWT de Clerk debe mapear
+ *     **`public_metadata`**, nunca `unsafe_metadata`: cualquiera puede
+ *     escribir `unsafe_metadata` desde el cliente y sería un rol forjable.
+ *  3. Sin claim o con valor fuera de la lista → `undefined` (sin permisos).
+ */
+function roleFromClaims(payload: unknown): UserRole | undefined {
+  if (typeof payload !== 'object' || payload === null) return undefined;
+  const claims = payload as { role?: unknown; public_metadata?: unknown };
+  const direct = toUserRole(claims.role);
+  if (direct) return direct;
+  const metadata = claims.public_metadata;
+  if (typeof metadata !== 'object' || metadata === null) return undefined;
+  return toUserRole((metadata as { role?: unknown }).role);
 }
 
 /** Envuelve una promesa con tope de duración (sin dejar timers colgados). */
@@ -213,4 +246,28 @@ export function respondUnauthorized(res: JsonResponder, message?: string): void 
   res.status(401).json({
     error: message ?? 'Debes iniciar sesión para realizar esta acción.',
   });
+}
+
+/**
+ * Mensaje del 403 de moderación (T28): misma respuesta para quien no tiene
+ * permiso en `PATCH /points/:id` y en `GET /reports`, para no filtrar por
+ * qué falló (rol ausente vs. rol insuficiente).
+ */
+export const MODERATION_FORBIDDEN = 'Se requiere permiso de moderación para esta acción.';
+
+/**
+ * ¿Esta sesión puede moderar? (T28) — se falla cerrado.
+ *
+ *  1. El rol del JWT verificado es `coordinador` (`isModerator`).
+ *  2. O su `sub` está en la lista blanca `MODERATOR_USER_IDS` (CSV de ids de
+ *     Clerk): permite activar moderación en producción **sin** tocar la
+ *     plantilla JWT de Clerk. Se documenta en el log para `.env.example`.
+ *
+ * Cualquier otro caso → `false` → 403.
+ */
+export function canModerate(user: AuthUser): boolean {
+  if (user.role !== undefined && isModerator(user.role)) return true;
+  const allowlist = process.env.MODERATOR_USER_IDS;
+  if (!allowlist) return false;
+  return allowlist.split(',').some((entry) => entry.trim() === user.userId);
 }

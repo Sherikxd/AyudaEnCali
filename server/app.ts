@@ -19,7 +19,7 @@ import './bootstrap.js'; // entorno primero: dotenv + initSupabase()
 import express, { type NextFunction, type Request, type Response } from 'express';
 import compression from 'compression';
 
-import { apiNotFound, errorHandler, securityHeaders } from './middleware.js';
+import { apiNotFound, apiRobotsHeaders, errorHandler, securityHeaders } from './middleware.js';
 import { clientIp, type ApiHandler, type ApiRequest } from './http.js';
 import { healthHandler } from './handlers/health.js';
 import { configHandler } from './handlers/config.js';
@@ -29,6 +29,7 @@ import { needsHandler } from './handlers/needs.js';
 import { needsSupportHandler } from './handlers/needsSupport.js';
 import { supportMineHandler } from './handlers/supportMine.js';
 import { commentsHandler } from './handlers/comments.js';
+import { reportsHandler } from './handlers/reports.js';
 import { chatHandler } from './handlers/chat.js';
 
 const isProduction = process.env.NODE_ENV === 'production';
@@ -46,6 +47,10 @@ app.disable('x-powered-by');
 if (isProduction) app.set('trust proxy', 1);
 
 app.use(securityHeaders);
+// T39 · SEO-15: `X-Robots-Tag: noindex` SOLO en `/api` (el HTML de la SPA
+// debe seguir indexándose). Montado antes de `express.json` para cubrir
+// también los 400 de cuerpo malformado, que responden sin llegar al router.
+app.use('/api', apiRobotsHeaders);
 // Gzip para texto (JS/CSS/HTML/JSON): el bundle principal baja de ~400 kB a
 // ~120 kB. Se coloca antes de rutas y estáticos para cubrir también la API.
 // En Vercel se omite: el borde ya comprime y ahorraría CPU (el plan Hobby
@@ -110,6 +115,10 @@ mount(api, '/support/mine', supportMineHandler);
 
 /* ------------------------ Comentarios / asistente ------------------------- */
 mount(api, '/comments', commentsHandler);
+// Cola de moderación (T28): `GET` solo con permiso de moderación, `POST`
+// con sesión de cualquier cuenta. En Vercel llega por el rewrite
+// `/api/reports` de `vercel.json` hacia la función de comentarios.
+mount(api, '/reports', reportsHandler);
 mount(api, '/chat', chatHandler);
 
 app.use('/api', api);

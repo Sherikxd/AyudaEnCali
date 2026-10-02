@@ -2,11 +2,11 @@ import React from 'react';
 import { useApp } from '../context/AppContext';
 import { useUser, useClerk, UserButton } from '@clerk/clerk-react';
 import { MapPin, Plus, PhoneCall, LogIn, HelpCircle } from 'lucide-react';
+import { TabLink } from './TabLink';
 
 export const Header: React.FC = () => {
   const { 
     activeTab, 
-    setActiveTab, 
     setIsReportModalOpen, 
     setReportModalType, 
     userProfile, 
@@ -32,9 +32,10 @@ export const Header: React.FC = () => {
   return (
     <header className="sticky top-0 z-40 bg-white/95 backdrop-blur-md border-b border-slate-100 px-4 lg:px-8 py-3.5 transition-all">
       <div className="max-w-7xl mx-auto flex items-center justify-between gap-4">
-        {/* Zone 1: Single text element wordmark */}
-        <button
-          onClick={() => setActiveTab('map')}
+        {/* Zone 1: Single text element wordmark — enlace al mapa (T38) */}
+        <TabLink
+          tab="map"
+          ariaCurrent={false}
           className="flex items-center gap-2.5 text-left group focus:outline-none"
         >
           <div className="w-9 h-9 rounded-xl bg-orange-600 flex items-center justify-center text-white shadow-sm shadow-orange-600/20 group-hover:scale-105 transition-transform">
@@ -45,12 +46,12 @@ export const Header: React.FC = () => {
               AyudaEn<span className="text-orange-600">Cali</span>
             </span>
           </div>
-        </button>
+        </TabLink>
 
-        {/* Zone 2: 4-6 clean text navigation links */}
+        {/* Zone 2: 4-6 clean text navigation links (T38: enlaces con hash, no botones) */}
         <nav className="hidden md:flex items-center gap-8 text-sm font-semibold">
-          <button
-            onClick={() => setActiveTab('map')}
+          <TabLink
+            tab="map"
             className={`transition-colors pb-1 relative focus:outline-none ${
               activeTab === 'map'
                 ? 'text-orange-600 font-bold'
@@ -61,10 +62,10 @@ export const Header: React.FC = () => {
             {activeTab === 'map' && (
               <span className="absolute bottom-0 left-0 right-0 h-0.5 bg-orange-600 rounded-full" />
             )}
-          </button>
+          </TabLink>
 
-          <button
-            onClick={() => setActiveTab('blog')}
+          <TabLink
+            tab="blog"
             className={`transition-colors pb-1 relative focus:outline-none ${
               activeTab === 'blog'
                 ? 'text-orange-600 font-bold'
@@ -75,10 +76,10 @@ export const Header: React.FC = () => {
             {activeTab === 'blog' && (
               <span className="absolute bottom-0 left-0 right-0 h-0.5 bg-orange-600 rounded-full" />
             )}
-          </button>
+          </TabLink>
 
-          <button
-            onClick={() => setActiveTab('chat')}
+          <TabLink
+            tab="chat"
             className={`transition-colors pb-1 relative focus:outline-none flex items-center gap-1.5 ${
               activeTab === 'chat'
                 ? 'text-orange-600 font-bold'
@@ -90,10 +91,10 @@ export const Header: React.FC = () => {
             {activeTab === 'chat' && (
               <span className="absolute bottom-0 left-0 right-0 h-0.5 bg-orange-600 rounded-full" />
             )}
-          </button>
+          </TabLink>
 
-          <button
-            onClick={() => setActiveTab('profile')}
+          <TabLink
+            tab="profile"
             className={`transition-colors pb-1 relative focus:outline-none ${
               activeTab === 'profile'
                 ? 'text-orange-600 font-bold'
@@ -104,7 +105,15 @@ export const Header: React.FC = () => {
             {activeTab === 'profile' && (
               <span className="absolute bottom-0 left-0 right-0 h-0.5 bg-orange-600 rounded-full" />
             )}
-          </button>
+          </TabLink>
+
+          {/* Enlace de texto real (T36/T37): interlinking al FAQ indexable. */}
+          <a
+            href="/#preguntas-frecuentes"
+            className="transition-colors text-slate-500 hover:text-orange-600 focus:outline-none"
+          >
+            Preguntas frecuentes
+          </a>
         </nav>
 
         {/* Zone 3: 1-2 primary actions */}

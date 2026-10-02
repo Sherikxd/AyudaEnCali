@@ -6,7 +6,7 @@ import type {
   PointStatus,
   UserRole,
 } from '../src/types/index.js';
-import type { HelpNeedWithAuthor } from './entities.js';
+import type { HelpNeedWithAuthor, ReportEntityType } from './entities.js';
 import type { GeoPoint } from './geo.js';
 
 /**
@@ -126,6 +126,16 @@ export interface CommentDraft {
   comment: string;
 }
 
+/** Tipos de entidad que se pueden reportar (T28 · cola de moderación). */
+const REPORT_ENTITY_TYPES: readonly ReportEntityType[] = ['point', 'need'];
+
+/** Reporte: la entidad, su id y el motivo. Quién reporta va en el JWT. */
+export interface ReportDraft {
+  entityType: ReportEntityType;
+  entityId: string;
+  reason: string;
+}
+
 export interface ChatDraft {
   message: string;
   /** Barrio declarado por el usuario para personalizar la respuesta. */
@@ -200,6 +210,30 @@ export const normalizeUrgency = (value: unknown): NeedUrgency => oneOf(value, UR
 export const normalizeNeedStatus = (value: unknown): NeedStatus =>
   oneOf(value, NEED_STATUSES, 'activa');
 export const normalizeRole = (value: unknown): UserRole => oneOf(value, USER_ROLES, 'ciudadano');
+
+/**
+ * Rol con forma válida o `undefined` si no lo es (T28 · moderación).
+ *
+ * A diferencia de `normalizeRole`, un valor desconocido **no** se corrige a
+ * `ciudadano`: los permisos de moderación deciden con este rol y deben
+ * fallar cerrado (sin rol reconocido no hay permisos).
+ */
+export function toUserRole(value: unknown): UserRole | undefined {
+  const candidate = text(value, 40);
+  return (USER_ROLES as readonly string[]).includes(candidate) ? (candidate as UserRole) : undefined;
+}
+
+/**
+ * ¿Este rol puede moderar? (T28 · FEAT-02)
+ *
+ * Moderar es marcar `verified` en un punto y leer la cola de reportes. No
+ * se crea ningún rol nuevo (eso tocaría `src/types/index.ts`, del área del
+ * agente-frontend): el rol existente con esa responsabilidad es
+ * `coordinador`. Si el rol no viene en el JWT se responde 403.
+ */
+export function isModerator(role: UserRole | undefined): boolean {
+  return role === 'coordinador';
+}
 
 /* -------------------------------------------------------------------------- */
 /* Validadores públicos                                                        */
@@ -487,6 +521,58 @@ export function validatePointUpdate(raw: unknown): ValidationResult<PointPatch> 
 
   if (errors.length > 0) return fail(...errors);
   return { ok: true, value: patch };
+}
+
+/**
+ * Parche de moderación (`PATCH /api/points/:id`, T28): **solo** `verified`.
+ *
+ * Cualquier otra clave del cuerpo → 400: la verificación es la única acción
+ * de moderación sobre un punto y no se edita «por las dudas» nada más (ni
+ * nombre, ni estado, ni identidad). Un `verified` que no sea booleano
+ * también es 400: aquí nunca se corrige en silencio.
+ */
+export function validateVerifiedUpdate(raw: unknown): ValidationResult<{ verified: boolean }> {
+  if (!isRecord(raw)) return fail('El cuerpo de la petición debe ser un objeto JSON.');
+
+  const errors: string[] = [];
+  const extra = Object.keys(raw).filter((key) => key !== 'verified');
+  if (extra.length > 0) errors.push('La moderación solo admite el campo "verified".');
+
+  const value = raw.verified;
+  if (!('verified' in raw)) errors.push('El campo "verified" es obligatorio.');
+  else if (typeof value !== 'boolean') errors.push('El campo "verified" debe ser verdadero o falso.');
+
+  if (errors.length > 0) return fail(...errors);
+  // Seguro: el `if` anterior ya exigió presencia y tipo booleano.
+  return { ok: true, value: { verified: value as boolean } };
+}
+
+/**
+ * Reporte de contenido (`POST /api/reports`, T28).
+ *
+ * `entityType` es estricto (`point | need`), `entityId` con formato
+ * controlado y `reason` un motivo de 3 a 500 caracteres (el texto largo se
+ * recorta, como en el resto de la API). Quién reporta **no** se lee de aquí:
+ * lo pone el handler desde el JWT verificado.
+ */
+export function validateReport(raw: unknown): ValidationResult<ReportDraft> {
+  if (!isRecord(raw)) return fail('El cuerpo de la petición debe ser un objeto JSON.');
+
+  const errors: string[] = [];
+  const entityType = text(raw.entityType, 20);
+  if (!(REPORT_ENTITY_TYPES as readonly string[]).includes(entityType)) {
+    errors.push('El tipo indicado no es válido (point | need).');
+  }
+  const entityId = text(raw.entityId, 80);
+  if (!/^[A-Za-z0-9_-]{4,80}$/.test(entityId)) {
+    errors.push('El identificador de la entidad es inválido.');
+  }
+  const reason = paragraph(raw.reason, LIMITS.medium);
+  if (reason.length < 3) errors.push('El motivo del reporte es obligatorio (mínimo 3 caracteres).');
+
+  if (errors.length > 0) return fail(...errors);
+  // Seguro: `entityType` solo llega aquí si está en la lista permitida.
+  return { ok: true, value: { entityType: entityType as ReportEntityType, entityId, reason } };
 }
 
 export function validateComment(raw: unknown): ValidationResult<CommentDraft> {

@@ -3,21 +3,33 @@
  * página al cambiar de pestaña: aquí se actualiza `<title>` y las etiquetas
  * de descripción/vista previa para que compartir o buscar la app muestre el
  * título de la vista que la persona tiene abierta.
+ *
+ * T36 (SEO-13): la sincronización cubre también `og:url`, `og:image`,
+ * `twitter:image` y la `<link rel="canonical">`.
+ *
+ * Los hashes son estados de la SPA, no páginas independientes: no crean
+ * destinos indexables ni cambian la URL que recibe el servidor. Por eso la
+ * canónica y `og:url` siempre apuntan a la raíz, aunque el título del
+ * navegador refleje la vista abierta.
  */
+
+import { CDN_IMAGES } from '../config/images';
+import type { TabKey } from './tabUrl';
+
+/** Host canónico del sitio (el dominio raíz redirige a `www`). */
+export const SITE_URL = 'https://www.ayudaencali.lat/';
 
 export interface PageMeta {
   title: string;
   description: string;
 }
 
-type TabKey = 'map' | 'blog' | 'chat' | 'profile';
-
-/** Título y descripción de cada pestaña. La marca se mantiene al final. */
+/** Título y descripción de cada pestaña, para el navegador y las vistas al compartir. */
 export const PAGE_META: Record<TabKey, PageMeta> = {
   map: {
-    title: 'Mapa de ayuda y emergencias en Cali | AyudaEnCali',
+    title: 'Centros de acopio y albergues en Cali | AyudaEnCali',
     description:
-      'Mapa interactivo de Santiago de Cali con centros de acopio, albergues, veterinarias y salud: busca por barrio, filtra por categoría y localízate con GPS.',
+      'Mapa en vivo de emergencias en Cali: centros de acopio, albergues, veterinarias y salud por barrio. Filtra por categoría o localízate con GPS.',
   },
   blog: {
     title: 'Tablón de necesidades y ayudas en Cali | AyudaEnCali',
@@ -42,7 +54,13 @@ const setMetaContent = (selector: string, content: string): void => {
   if (tag) tag.setAttribute('content', content);
 };
 
-/** Sincroniza `<title>` y las metadatos de vista (description, OG, Twitter). */
+/** Apunta el primer `<link>` que cumpla el selector a una URL. */
+const setLinkHref = (selector: string, href: string): void => {
+  const tag = document.querySelector<HTMLLinkElement>(selector);
+  if (tag) tag.setAttribute('href', href);
+};
+
+/** Sincroniza `<title>`, descripción, OG, Twitter y la canónica de la URL. */
 export function updatePageMeta(meta: PageMeta): void {
   document.title = meta.title;
   setMetaContent('meta[name="description"]', meta.description);
@@ -50,4 +68,8 @@ export function updatePageMeta(meta: PageMeta): void {
   setMetaContent('meta[property="og:description"]', meta.description);
   setMetaContent('meta[name="twitter:title"]', meta.title);
   setMetaContent('meta[name="twitter:description"]', meta.description);
+  setMetaContent('meta[property="og:url"]', SITE_URL);
+  setMetaContent('meta[property="og:image"]', CDN_IMAGES.og);
+  setMetaContent('meta[name="twitter:image"]', CDN_IMAGES.og);
+  setLinkHref('link[rel="canonical"]', SITE_URL);
 }

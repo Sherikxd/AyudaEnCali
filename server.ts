@@ -17,6 +17,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 
 import { errorHandler } from './server/middleware';
+import { enableViteDevCsp } from './server/http';
 import { errorMessage, logger } from './server/logger';
 import { maybeVerifySchema } from './server/supabase';
 import app from './server/app';
@@ -56,6 +57,11 @@ async function startServer(): Promise<void> {
       server: { middlewareMode: true },
       appType: 'spa',
     });
+    // T32: el shell que Vite sirve aquí lleva el `<script type="module">`
+    // inline de react-refresh, que la CSP estricta de producción bloquearía.
+    // Se relaja SOLO en este proceso (humo y producción siguen con la copia
+    // textual de `vercel.json`; ver `relaxCspForViteDev` en `server/http.ts`).
+    enableViteDevCsp();
     app.use(vite.middlewares);
   } else {
     const distDir = path.resolve(__dirname, 'dist');

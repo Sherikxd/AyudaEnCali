@@ -21,7 +21,7 @@ import {
   normalizeUrgency,
 } from './validation.js';
 import type { NeedPatch, PointPatch } from './validation.js';
-import type { HelpNeedWithAuthor } from './entities.js';
+import type { EntityReport, HelpNeedWithAuthor } from './entities.js';
 import type { HelpPoint, PointComment } from '../src/types/index.js';
 
 /* -------------------------------------------------------------------------- */
@@ -149,12 +149,15 @@ function sqlEditorUrl(host: string | null): string {
   return host ? `https://${host}/project/_/sql` : 'el SQL Editor de Supabase';
 }
 
+/** Tablas del esquema, para los mensajes de estado y de «faltan tablas». */
+const SCHEMA_TABLES = 'help_points, help_needs, need_supporters, point_comments y entity_reports';
+
 function missingTablesHint(host: string | null): string {
   const where = sqlEditorUrl(host);
   if (process.env.SUPABASE_ACCESS_TOKEN) {
-    return `Faltan tablas o columnas del esquema (help_points, help_needs, need_supporters o point_comments). El servidor intentará crearlas solo; si no puede, pega supabase/schema.sql en ${where}.`;
+    return `Faltan tablas o columnas del esquema (${SCHEMA_TABLES}). El servidor intentará crearlas solo; si no puede, pega supabase/schema.sql en ${where}.`;
   }
-  return `Faltan tablas o columnas del esquema (help_points, help_needs, need_supporters o point_comments). Ejecuta el esquema en ${where} (o descárgalo con GET /api/supabase/sql, que exige Authorization: Bearer <SQL_ADMIN_TOKEN>).`;
+  return `Faltan tablas o columnas del esquema (${SCHEMA_TABLES}). Ejecuta el esquema en ${where} (o descárgalo con GET /api/supabase/sql, que exige Authorization: Bearer <SQL_ADMIN_TOKEN>).`;
 }
 
 const AUTH_HINT = 'Claves de Supabase rechazadas: revisa SUPABASE_SERVICE_ROLE_KEY / SUPABASE_ANON_KEY en .env.';
@@ -198,7 +201,7 @@ function noteSupabaseOk(): void {
   status.tablesReady = true;
   status.hint = null;
   lastLoggedKind = null;
-  logger.info('Supabase: esquema verificado (help_points, help_needs, need_supporters y point_comments accesibles).');
+  logger.info(`Supabase: esquema verificado (${SCHEMA_TABLES} accesibles).`);
 }
 
 /* -------------------------------------------------------------------------- */
@@ -258,6 +261,9 @@ const SCHEMA_PROBES: ReadonlyArray<readonly [table: string, column: string]> = [
   ['help_needs', 'author_id'],
   ['need_supporters', 'need_id'],
   ['point_comments', 'id'],
+  // Cola de moderación (T28): con la tabla ausente el sondeo la detecta y
+  // aplica el DDL de `supabase/schema.sql` automáticamente.
+  ['entity_reports', 'id'],
 ];
 
 async function probe(target: SupabaseClient): Promise<SupabaseErrorKind | 'ok'> {
@@ -345,7 +351,7 @@ async function verify(): Promise<void> {
     status.tablesReady = false;
     status.hint =
       applied && !applied.ok
-        ? `Faltan tablas o columnas del esquema (help_points, help_needs, need_supporters o point_comments) y no se pudieron crear (${applied.message}). Pega supabase/schema.sql en ${sqlEditorUrl(status.host)}.`
+        ? `Faltan tablas o columnas del esquema (${SCHEMA_TABLES}) y no se pudieron crear (${applied.message}). Pega supabase/schema.sql en ${sqlEditorUrl(status.host)}.`
         : missingTablesHint(status.host);
     logOnce('missing', `Supabase: ${status.hint}`);
     return;
@@ -621,6 +627,55 @@ export function toCommentRow(comment: PointComment): PointCommentRow {
     author_barrio: comment.userBarrio ?? null,
     body: comment.comment,
     created_at: comment.createdAt,
+  };
+}
+
+/* -------------------------------------------------------------------------- */
+/* Reportes de moderación (T28 · entity_reports)                               */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Fila de `entity_reports`.
+ *
+ * Postgres no admite claves foráneas polimórficas: la tabla lleva DOS
+ * columnas FK (`point_id` / `need_id`) y la columna de consulta
+ * (`entity_id`), con CHECKs que obligan a que coincidan. Todas se escriben
+ * juntas (`toReportRow`) para no depender de que el DDL las rellene.
+ */
+export interface EntityReportRow {
+  id?: string;
+  entity_type?: string;
+  entity_id?: string;
+  point_id?: string | null;
+  need_id?: string | null;
+  reporter_id?: string;
+  reason?: string;
+  created_at?: string;
+}
+
+export function mapReportRow(row: EntityReportRow): EntityReport {
+  const entityType = row.entity_type === 'need' ? 'need' : 'point';
+  return {
+    id: String(row.id ?? ''),
+    entityType,
+    // La entidad real es la FK viva; `entity_id` es la columna de consulta.
+    entityId: String((entityType === 'need' ? row.need_id : row.point_id) ?? row.entity_id ?? ''),
+    reporterId: String(row.reporter_id ?? ''),
+    reason: String(row.reason ?? ''),
+    createdAt: row.created_at ?? new Date().toISOString(),
+  };
+}
+
+export function toReportRow(report: EntityReport): EntityReportRow {
+  return {
+    id: report.id,
+    entity_type: report.entityType,
+    entity_id: report.entityId,
+    point_id: report.entityType === 'point' ? report.entityId : null,
+    need_id: report.entityType === 'need' ? report.entityId : null,
+    reporter_id: report.reporterId,
+    reason: report.reason,
+    created_at: report.createdAt,
   };
 }
 

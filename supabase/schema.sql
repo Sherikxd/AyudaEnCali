@@ -112,6 +112,39 @@ CREATE TABLE IF NOT EXISTS point_comments (
 
 CREATE INDEX IF NOT EXISTS idx_point_comments_point_id ON point_comments (point_id, created_at DESC);
 
+-- TABLA 5: Reportes de la comunidad (cola de moderación, T28) ---------------
+-- Quién reporta lo hace con la sesión ya verificada en el servidor:
+-- `reporter_id` es el `sub` del JWT de Clerk (nunca del cuerpo) y solo el
+-- backend escribe con la SERVICE ROLE KEY.
+--
+-- Postgres NO admite claves foráneas polimórficas (una tabla no puede
+-- referenciar dos destinos con una sola FK), de ahí las DOS columnas FK
+-- (`point_id` / `need_id`) más `entity_id`, la columna por la que se
+-- consulta. Los CHECKs garantizan que cada fila apunta a UNA entidad y
+-- solo a la de su tipo:
+--   * `entity_type='point'` → `point_id` relleno y `need_id` NULL (y al revés)
+--   * `entity_id = COALESCE(point_id, need_id)` → la columna de consulta
+--     siempre coincide con la FK real.
+-- El índice único `(reporter_id, entity_type, entity_id)` es el dedup: un
+-- mismo ciudadano no puede acumular dos veces el mismo reporte.
+CREATE TABLE IF NOT EXISTS entity_reports (
+  id TEXT PRIMARY KEY,
+  entity_type TEXT NOT NULL CHECK (entity_type IN ('point', 'need')),
+  entity_id TEXT NOT NULL,
+  point_id TEXT REFERENCES help_points (id) ON DELETE CASCADE,
+  need_id TEXT REFERENCES help_needs (id) ON DELETE CASCADE,
+  reporter_id TEXT NOT NULL,
+  reason TEXT NOT NULL,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  CHECK ((entity_type = 'point') = (point_id IS NOT NULL)),
+  CHECK ((entity_type = 'need') = (need_id IS NOT NULL)),
+  CHECK (entity_id = COALESCE(point_id, need_id))
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_entity_reports_dedup
+  ON entity_reports (reporter_id, entity_type, entity_id);
+CREATE INDEX IF NOT EXISTS idx_entity_reports_created_at ON entity_reports (created_at DESC);
+
 -- Un comentario pertenece SIEMPRE a un punto existente (FAL-02): sin esta
 -- clave foránea los comentarios podían quedar huérfanos cuando se borraba el
 -- punto. `ON DELETE CASCADE` borra con él los comentarios del punto.
@@ -144,6 +177,7 @@ ALTER TABLE help_points ENABLE ROW LEVEL SECURITY;
 ALTER TABLE help_needs ENABLE ROW LEVEL SECURITY;
 ALTER TABLE need_supporters ENABLE ROW LEVEL SECURITY;
 ALTER TABLE point_comments ENABLE ROW LEVEL SECURITY;
+ALTER TABLE entity_reports ENABLE ROW LEVEL SECURITY;
 
 DO $$
 BEGIN
@@ -211,11 +245,12 @@ END $$;
 
 -- Eliminaciones: sin políticas (nadie puede borrar desde la API con anon) --
 
--- need_supporters y point_comments: RLS activo y SIN políticas a propósito ----
+-- need_supporters, point_comments y entity_reports: RLS activo y SIN políticas --
 -- Solo el backend accede con la SERVICE ROLE KEY (que bypasea RLS). Así ni
 -- `anon` ni `authenticated` pueden descubrir qué usuario apoyó qué
--- necesidad ni escribir comentarios: la API solo devuelve esos datos a la
--- propia cuenta, con la sesión de Clerk ya verificada en el servidor.
+-- necesidad, escribir comentarios ni leer/escribir la cola de reportes: la
+-- API solo devuelve esos datos con la sesión de Clerk ya verificada en el
+-- servidor (401 sin sesión y 403 sin permiso de moderación en T28).
 
 -- Recuento atómico de apoyos ------------------------------------------------
 -- `toggle_need_support` hace el INSERT/DELETE en `need_supporters` y

@@ -15,6 +15,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import {
   clientIp,
   readJsonBody,
+  setApiRobotsHeaders,
   setSecurityHeaders,
   type ApiHandler,
   type ApiRequest,
@@ -98,6 +99,10 @@ function toApiRequest(req: VercelRequest, body: unknown): ApiRequest {
 export function createApiRoute(core: ApiHandler) {
   return async function route(req: VercelRequest, res: VercelResponse): Promise<void> {
     setSecurityHeaders(res);
+    // T39 · SEO-15: la API no se indexa. El HTML lo sirve la capa estática
+    // de Vercel, que nunca pasa por esta función, así que aquí no hay riesgo
+    // de desindexar la SPA.
+    setApiRobotsHeaders(res);
 
     try {
       const body = await readJsonBody(req, res);

@@ -11,13 +11,16 @@
 #        · anon      → lee, no inserta, no borra
 #        · authenticated con token  → inserta
 #        · authenticated sin token  → no inserta
-#        · need_supporters y point_comments → sin políticas (solo el
-#          backend) y con clave primaria que impide apoyos duplicados
+#        · need_supporters, point_comments y entity_reports → sin políticas
+#          (solo el backend) y con clave primaria que impide apoyos
+#          duplicados y reportes repetidos
 #        · toggle_need_support → recuenta desde la BD y solo la SERVICE
 #          ROLE puede ejecutarla
 #        · point_comments → clave foránea a help_points (T1): sin punto no
 #          hay comentario y el borrado del punto arrastra los suyos
 #        · help_needs.author_id → columna + índice con backfill NULL (T1)
+#        · entity_reports → FK por tipo (point_id/need_id), CHECKs de
+#          coherencia, dedup por (reporter, entity) y CASCADE (T28)
 #
 # Requiere: initdb, pg_ctl y psql en el PATH (PostgreSQL 14+).
 # Uso:  npm run verify:rls   (o: bash scripts/verify-rls.sh)
@@ -89,19 +92,19 @@ psql -Atc "SELECT '  ' || tablename || ' | ' || policyname || ' | ' || cmd
 count=$(psql -Atc "SELECT count(*) FROM pg_policies WHERE schemaname='public';")
 [ "$count" = "6" ] || { echo "FALLO: hay $count políticas, se esperaban 6"; fail=1; }
 
-step "RLS habilitado en las cuatro tablas"
+step "RLS habilitado en las cinco tablas"
 rls=$(psql -Atc "SELECT relname || '=' || relrowsecurity FROM pg_class
-           WHERE relname IN ('help_points','help_needs','need_supporters','point_comments') ORDER BY relname;")
+           WHERE relname IN ('help_points','help_needs','need_supporters','point_comments','entity_reports') ORDER BY relname;")
 echo "$rls" | sed 's/^/  /'
-if [ "$(echo "$rls" | grep -c '=t')" = "4" ]; then
+if [ "$(echo "$rls" | grep -c '=t')" = "5" ]; then
   echo "  OK"
 else
   echo "  FALLO: RLS desactivado en alguna tabla"; fail=1
 fi
 
-step "need_supporters y point_comments: sin políticas (solo la SERVICE ROLE)"
+step "need_supporters, point_comments y entity_reports: sin políticas (solo la SERVICE ROLE)"
 ns_policies=$(psql -Atc "SELECT count(*) FROM pg_policies
-                         WHERE schemaname='public' AND tablename IN ('need_supporters','point_comments');")
+                         WHERE schemaname='public' AND tablename IN ('need_supporters','point_comments','entity_reports');")
 echo "  politicas: $ns_policies (esperadas: 0)"
 [ "$ns_policies" = "0" ] || { echo "  FALLO: hay políticas donde no deben existir"; fail=1; }
 
@@ -279,6 +282,82 @@ idx=$(psql -Atc "SELECT count(*) FROM pg_indexes
 heredado=$(psql -Atc "SELECT count(*) FROM help_needs WHERE id='x1' AND author_id IS NULL;")
 [ "$heredado" = "1" ] || { echo "  FALLO: el backfill dejó un author_id inesperado"; fail=1; }
 echo "  OK: author_id presente, con índice y NULL en los heredados"
+
+step "13) entity_reports: RLS sin políticas, FK por tipo y dedup (T28)"
+# a) Fila válida, escrita como la escribe el backend (service_role).
+psql -v ON_ERROR_STOP=1 -q -c "
+  INSERT INTO entity_reports (id, entity_type, entity_id, point_id, need_id, reporter_id, reason)
+  VALUES ('r1','need','x1',NULL,'x1','user_a','Reporte de prueba');"
+
+# b) anon ni lee ni escribe la cola (RLS activo y sin políticas).
+er_rows=$(psql -Atc "SET ROLE anon; SELECT count(*) FROM entity_reports; RESET ROLE;" 2>&1 | grep -E '^[0-9]+$' | head -1)
+if [ "$er_rows" = "0" ]; then
+  echo "  OK: anon ve 0 reportes"
+else
+  echo "  FALLO: anon leyó $er_rows reportes"; fail=1
+fi
+
+if psql -Atc "SET ROLE anon;
+  INSERT INTO entity_reports (id, entity_type, entity_id, point_id, need_id, reporter_id, reason)
+  VALUES ('r2','need','x1',NULL,'x1','user_falso','intruso');
+  RESET ROLE;" >/dev/null 2>&1; then
+  echo "  FALLO: el INSERT de anon en entity_reports pasó"; fail=1
+else
+  echo "  OK: INSERT de anon bloqueado"
+fi
+
+if psql -Atc "SET ROLE authenticated;
+  INSERT INTO entity_reports (id, entity_type, entity_id, point_id, need_id, reporter_id, reason)
+  VALUES ('r3','need','x1',NULL,'x1','11111111-1111-4111-8111-111111111111','intruso');
+  RESET ROLE;" >/dev/null 2>&1; then
+  echo "  FALLO: authenticated escribió en la cola (solo debe escribir el backend)"; fail=1
+else
+  echo "  OK: solo el backend escribe reportes"
+fi
+
+# c) FK: una fila huérfana no entra (la entidad reportada debe existir).
+if psql -Atc "INSERT INTO entity_reports (id, entity_type, entity_id, point_id, need_id, reporter_id, reason)
+  VALUES ('r4','need','no-existe',NULL,'no-existe','user_a','huérfano');" 2>&1 \
+  | grep -qi "violates foreign key constraint"; then
+  echo "  OK: reporte sin entidad rechazado por la restricción"
+else
+  echo "  FALLO: entró un reporte huérfano"; fail=1
+fi
+
+# d) CHECK de coherencia: entity_type='need' no puede apuntar por point_id.
+if psql -Atc "INSERT INTO entity_reports (id, entity_type, entity_id, point_id, need_id, reporter_id, reason)
+  VALUES ('r5','need','x1','p1',NULL,'user_a','tipo inconsistente');" 2>&1 \
+  | grep -qi "violates check constraint"; then
+  echo "  OK: fila con la FK del tipo equivocado rechazada por el CHECK"
+else
+  echo "  FALLO: entró una fila con la FK del tipo equivocado"; fail=1
+fi
+
+# e) dedup: mismo (reporter, tipo, entidad) no se acepta dos veces.
+if psql -Atc "INSERT INTO entity_reports (id, entity_type, entity_id, point_id, need_id, reporter_id, reason)
+  VALUES ('r6','need','x1',NULL,'x1','user_a','duplicado');" 2>&1 \
+  | grep -qi "duplicate key"; then
+  echo "  OK: reporte repetido del mismo ciudadano rechazado"
+else
+  echo "  FALLO: entró un reporte duplicado"; fail=1
+fi
+er_total=$(psql -Atc "SELECT count(*) FROM entity_reports;")
+[ "$er_total" = "1" ] || { echo "  FALLO: quedan $er_total reportes (esperados 1)"; fail=1; }
+
+# f) ON DELETE CASCADE: al borrar la entidad se borran sus reportes.
+psql -v ON_ERROR_STOP=1 -q -c "
+  INSERT INTO help_needs (id,title,description,category,barrio,contact_name,contact_phone)
+  VALUES ('x3','Necesidad temporal','borrar','acopio','San Antonio','Ana','300');"
+psql -v ON_ERROR_STOP=1 -q -c "
+  INSERT INTO entity_reports (id, entity_type, entity_id, point_id, need_id, reporter_id, reason)
+  VALUES ('r7','need','x3',NULL,'x3','user_a','se va con la entidad');"
+psql -v ON_ERROR_STOP=1 -q -c "DELETE FROM help_needs WHERE id='x3';" >/dev/null
+er_cascade=$(psql -Atc "SELECT count(*) FROM entity_reports WHERE id='r7';")
+if [ "$er_cascade" = "0" ]; then
+  echo "  OK: borrar la necesidad arrastra sus reportes"
+else
+  echo "  FALLO: quedan $er_cascade reportes huérfanos"; fail=1
+fi
 
 echo
 if [ "$fail" -eq 0 ]; then echo "RESULTADO: esquema y politicas RLS correctas [OK]"; else echo "RESULTADO: hay fallos [ERROR]"; fi

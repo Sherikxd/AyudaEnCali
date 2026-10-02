@@ -22,3 +22,26 @@ export interface HelpNeedWithAuthor extends HelpNeed {
 export function isClerkUserId(authorId: string | undefined | null): authorId is string {
   return typeof authorId === 'string' && authorId.startsWith('user_');
 }
+
+/** Entidades que la comunidad puede reportar en la cola (T28 · FEAT-02). */
+export type ReportEntityType = 'point' | 'need';
+
+/**
+ * Reporte sobre un punto o una necesidad (`entity_reports`, T28).
+ *
+ * Solo lo escribe el servidor con la identidad tomada del JWT verificado
+ * (`reporterId` = `sub` de Clerk, nunca del cuerpo de la petición). La
+ * unicidad de `(reporterId, entityType, entityId)` está en la BD: un mismo
+ * ciudadano no puede acumular el mismo reporte dos veces.
+ */
+export interface EntityReport {
+  id: string;
+  entityType: ReportEntityType;
+  /** Id de la entidad reportada (`help_points.id` o `help_needs.id`). */
+  entityId: string;
+  /** Clerk `user_id` de quien reporta. */
+  reporterId: string;
+  /** Motivo en texto libre (3..500 caracteres, ya saneado). */
+  reason: string;
+  createdAt: string;
+}

@@ -10,7 +10,8 @@
  *     rewrite de apoyos y ≤ 12 funciones (límite del plan Hobby). Si existen
  *     los rewrites de ciclo de vida (`/api/needs/:id`, `/api/points/:id`,
  *     T2) también se comprueba que entreguen el id por ruta canónica **y**
- *     por `?id=`.
+ *     por `?id=`, y el de la cola de moderación (`/api/reports`, T28) que
+ *     llegue a la función de comentarios con `_orig=reports`.
  *  3. **Rutas**: levanta un servidor local que emula el enrutado de Vercel
  *     (filesystem primero y luego los `rewrites` del `vercel.json` real,
  *     expandiendo `:id`/`:path*` como hace `@vercel/routing-utils`) y
@@ -27,6 +28,14 @@
  *         cabeceras `RateLimit-*`; sin `page` la respuesta sigue intacta (T3)
  *       · `PATCH /needs/:id` y `DELETE /points/:id` → 401 con sesión ausente
  *         cuando el rewrite existe, o el 404 histórico si aún no está (T2)
+ *       · `GET/POST /reports` → 401 sin sesión cuando el rewrite existe
+ *         (o el 404 del catch-all si aún no está) — cola de moderación (T28)
+ *       · **Cabeceras de seguridad (T32)**: `/api/health` debe llevar la CSP,
+ *         Permissions-Policy, Referrer-Policy y X-Frame-Options **tal cual**
+ *         las declara el bloque `/` de `vercel.json`, más
+ *         `Cross-Origin-Opener-Policy: same-origin` (solo del adaptador)
+ *       · **`X-Robots-Tag` (T39)**: la API (`/api/health`) lleva
+ *         `noindex` y el HTML de `/` **no** la lleva (SEO-15)
  *  4. **`request.body` que lanza** (comportamiento documentado de Vercel ante
  *     JSON malformado): llama directamente al handler con un getter que
  *     lanza y espera el **400** (P1 de la T12), y con otro error cualquiera
@@ -129,6 +138,17 @@ estatico(
       String(pointsIdRewrite.destination).includes('id=:id') &&
       rewrites.indexOf(pointsIdRewrite) < catchAll),
   'el rewrite de /api/points/:id (si existe) entrega el id por ruta canónica Y por `?id=`',
+);
+// T28: la cola de moderación se sirve desde la función de comentarios, así
+// que su rewrite es OBLIGATORIO (si no está, /api/reports cae al catch-all
+// y la ruta de la sección de humo cambia en consecuencia).
+const reportsRewrite = rewrites.find((r) => r.source === '/api/reports');
+estatico(
+  !!reportsRewrite &&
+    String(reportsRewrite.destination).startsWith('/api/comments?') &&
+    String(reportsRewrite.destination).includes('_orig=reports') &&
+    rewrites.indexOf(reportsRewrite) < catchAll,
+  'el rewrite de /api/reports llega a la función de comentarios con `_orig=reports` y antes del catch-all',
 );
 estatico(apiFiles.length <= 12, `${apiFiles.length} funciones ≤ 12 del plan Hobby`);
 
@@ -279,6 +299,16 @@ const JSON_INVALIDO = 'JSON inválido en el cuerpo de la petición.';
 const SIN_SESION_APOYO = 'Debes iniciar sesión para apoyar una necesidad.';
 
 /**
+ * Valor que el bloque `/` de `vercel.json` manda para una cabecera.
+ *
+ * T32: las mismas cabeceras debe ponerlas el adaptador de API
+ * (`setSecurityHeaders` en `server/http.ts`), así que los casos de humo de
+ * abajo comparan la respuesta real de `/api/health` contra ESTE valor.
+ */
+const headerVercel = (key) =>
+  ((cfg.headers ?? []).find((h) => h.source === '/')?.headers ?? []).find((h) => h.key === key)?.value;
+
+/**
  * ¿Los rewrites de ciclo de vida (T2) están ya en `vercel.json`?
  *
  * Si sí, `PATCH /needs/:id` y `DELETE /points/:id` llegan a los núcleos y
@@ -288,12 +318,16 @@ const SIN_SESION_APOYO = 'Debes iniciar sesión para apoyar una necesidad.';
  */
 const routedNeedsId = resolveTarget('/api/needs/XYZ')?.handler === handlers.get('/api/needs');
 const routedPointsId = resolveTarget('/api/points/XYZ')?.handler === handlers.get('/api/points');
+// T28: `/api/reports` se reescribe a la función de comentarios (dispatch por
+// `_orig=reports`); si el rewrite no está, cae en el catch-all.
+const routedReports = resolveTarget('/api/reports')?.handler === handlers.get('/api/comments');
 
 /**
- * Caso de ciclo de vida adaptado al estado del `vercel.json`.
+ * Caso adaptado al estado del `vercel.json`.
  *
  * Con `SMOKE_BASE_URL` manda el `vercel.json` **del despliegue**, que puede
  * ser distinto del local: ahí se aceptan los dos resultados posibles.
+ * Lo usan las rutas de ciclo de vida (T2) y la cola de reportes (T28).
  */
 function casoCiclo(id, method, path, json, routed) {
   if (esDeploy) return { id, method, path, json, statusAny: [401, 404] };
@@ -357,6 +391,64 @@ const casos = [
     soloLocal: true,
   },
   { id: 'cabeceras de seguridad', method: 'GET', path: '/api/health', status: 200, header: ['x-content-type-options', 'nosniff'] },
+  // T32 · paridad local/Docker ↔ Vercel: el adaptador de API debe mandar las
+  // MISMAS cabeceras que el bloque `/` de `vercel.json`. Ojo con `SMOKE_BASE_URL`: un despliegue hecho antes de este push todavía no las lleva en
+  // la API y estos casos se pondrán en rojo (se re-sube y vuelven a verde).
+  {
+    id: 'CSP de la API = la del bloque `/` de vercel.json (T32)',
+    method: 'GET',
+    path: '/api/health',
+    status: 200,
+    header: ['content-security-policy', headerVercel('Content-Security-Policy')],
+  },
+  {
+    id: 'Permissions-Policy de la API = la de vercel.json (T32)',
+    method: 'GET',
+    path: '/api/health',
+    status: 200,
+    header: ['permissions-policy', headerVercel('Permissions-Policy')],
+  },
+  {
+    id: 'Referrer-Policy de la API = la de vercel.json (T32)',
+    method: 'GET',
+    path: '/api/health',
+    status: 200,
+    header: ['referrer-policy', headerVercel('Referrer-Policy')],
+  },
+  {
+    id: 'X-Frame-Options de la API = la de vercel.json (T32)',
+    method: 'GET',
+    path: '/api/health',
+    status: 200,
+    header: ['x-frame-options', headerVercel('X-Frame-Options')],
+  },
+  {
+    id: 'Cross-Origin-Opener-Policy: same-origin (solo adaptador de API, T32)',
+    method: 'GET',
+    path: '/api/health',
+    status: 200,
+    header: ['cross-origin-opener-policy', 'same-origin'],
+  },
+  // T39 · SEO-15: la API JSON no se indexa y el HTML de la SPA sí. Ojo con
+  // `SMOKE_BASE_URL`: un despliegue hecho antes de este push no lleva la
+  // cabecera en la API y el caso se pone en rojo (se re-sube y vuelve a verde).
+  {
+    id: 'X-Robots-Tag: noindex en la API (T39)',
+    method: 'GET',
+    path: '/api/health',
+    status: 200,
+    header: ['x-robots-tag', 'noindex'],
+  },
+  {
+    // El emulador local no sirve estáticos (404); contra el despliegue, el
+    // HTML real de la raíz. En ninguno de los dos casos puede aparecer la
+    // cabecera: desindexaría la home.
+    id: 'el HTML de `/` NO lleva X-Robots-Tag (T39)',
+    method: 'GET',
+    path: '/',
+    statusAny: [200, 404],
+    header: ['x-robots-tag', null],
+  },
   {
     id: 'POST /api/points sin sesión',
     method: 'POST',
@@ -424,6 +516,10 @@ const casos = [
   // --- ciclo de vida (T2) ---
   casoCiclo('PATCH /api/needs/XYZ sin sesión', 'PATCH', '/api/needs/XYZ', { status: 'resuelta' }, routedNeedsId),
   casoCiclo('DELETE /api/points/XYZ sin sesión', 'DELETE', '/api/points/XYZ', undefined, routedPointsId),
+
+  // --- cola de moderación (T28): 401 sin sesión en GET y POST ---
+  casoCiclo('GET /api/reports sin sesión', 'GET', '/api/reports', undefined, routedReports),
+  casoCiclo('POST /api/reports sin sesión', 'POST', '/api/reports', { entityType: 'point', entityId: 'XYZ', reason: 'Prueba de humo' }, routedReports),
   // Con o sin rewrite, un método no soportado en la ruta con id es 404 y con
   // la misma ruta canónica en el cuerpo (paridad Express ↔ funciones).
   { id: 'GET /api/needs/XYZ → 404', method: 'GET', path: '/api/needs/XYZ', status: 404, exactBody: { error: 'Ruta no encontrada: GET /needs/XYZ' } },
@@ -505,7 +601,7 @@ for (const caso of casos) {
       const got = res.headers.get(key);
       if (got !== value) {
         ok = false;
-        detalle += ` · header ${key}=${got} (esperado ${value})`;
+        detalle += ` · header ${key}=${got} (esperado ${value === null ? 'ausente' : value})`;
       }
     }
     if (ok && caso.check) {

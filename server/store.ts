@@ -7,7 +7,7 @@
  * instancia por módulo), igual que cualquier otro estado en memoria.
  */
 import { INITIAL_COMMENTS, INITIAL_HELP_NEEDS, INITIAL_HELP_POINTS } from './seedData.js';
-import type { HelpNeedWithAuthor } from './entities.js';
+import type { EntityReport, HelpNeedWithAuthor, ReportEntityType } from './entities.js';
 import type { HelpPoint, PointComment } from '../src/types/index.js';
 
 /** Tope de elementos que se mantienen en memoria como caché de respaldo. */
@@ -17,10 +17,13 @@ export const memory: {
   points: HelpPoint[];
   needs: HelpNeedWithAuthor[];
   comments: PointComment[];
+  /** Cola de reportes de moderación (T28), espejo de `entity_reports`. */
+  reports: EntityReport[];
 } = {
   points: [...INITIAL_HELP_POINTS],
   needs: [...INITIAL_HELP_NEEDS],
   comments: [...INITIAL_COMMENTS],
+  reports: [],
 };
 
 /**
@@ -65,4 +68,17 @@ export function replaceInCache<T extends { id: string }>(list: T[], item: T): T[
 /** Retira de la caché el elemento borrado (T2). */
 export function removeFromCache<T extends { id: string }>(list: T[], id: string): T[] {
   return list.filter((entry) => entry.id !== id);
+}
+
+/**
+ * Retira los reportes de una entidad borrada (T28).
+ *
+ * Espejo de la FK `ON DELETE CASCADE` de `entity_reports`: en Supabase los
+ * reportes se van con su punto/necesidad solos; en la caché en memoria hay
+ * que limpiarlos a mano para que la cola no muestre entidades fantasma.
+ */
+export function purgeReportsFromCache(entityType: ReportEntityType, entityId: string): void {
+  memory.reports = memory.reports.filter(
+    (report) => !(report.entityType === entityType && report.entityId === entityId),
+  );
 }

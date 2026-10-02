@@ -23,6 +23,17 @@ export type UserRole = 'ciudadano' | 'voluntario' | 'coordinador';
  */
 export interface PendingLocal {
   pending?: boolean;
+  /**
+   * Rechazo **permanente** del servidor (BUG-02): un 4xx que no se arregla
+   * reintentando (400/403/404/409…, salvo 401/408/429). El ítem conserva su
+   * payload y sigue `pending` (sigue en el dispositivo y sin confirmar), pero
+   * ya **no** se reenvía solo: aparece en el aviso de pendientes con las
+   * acciones «Reintentar» y «Descartar». Se limpia al reintentar o al
+   * confirmarlo el servidor.
+   */
+  syncFailed?: boolean;
+  /** Mensaje del servidor que provocó el rechazo (se muestra en el aviso). */
+  syncError?: string;
 }
 
 export interface HelpPoint extends PendingLocal {
@@ -200,11 +211,28 @@ export interface CommentResponse {
 /** Tipo de aviso: colorea el toast y define el texto accesible. */
 export type ToastKind = 'success' | 'error' | 'warning' | 'info';
 
+/**
+ * Acción visible dentro de un aviso (BUG-02): «Reintentar» o «Descartar»
+ * sobre una publicación rechazada. Los avisos con acciones **no** se cierra
+ * solos: exigen una decisión y así no se pierden datos en silencio.
+ */
+export interface ToastAction {
+  /** Identidad estable de la acción dentro del aviso (clave de React). */
+  id: string;
+  label: string;
+  /** Recibe el id del aviso para poder cerrarlo al actuar. */
+  run: (toastId: number) => void;
+  /** Pinta el botón en rojo (acción destructiva, p. ej. «Descartar»). */
+  variant?: 'default' | 'danger';
+}
+
 export interface ToastItem {
   /** Identidad estable (clave de React y para descartarla a mano). */
   id: number;
   kind: ToastKind;
   message: string;
+  /** Si tiene acciones el aviso se queda hasta que se actúe o se cierre. */
+  actions?: ToastAction[];
 }
 
 /** Acción de apoyo: `add` da el like, `remove` lo retira (una sola vez por usuario). */

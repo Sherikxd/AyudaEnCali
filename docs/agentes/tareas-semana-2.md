@@ -44,6 +44,65 @@ Leyenda de estado: `⬜ pendiente` · `🟡 en curso` · `✅ hecha` · `⛔ blo
 | Agente pesado (Copilot) | rewrites de T2 en `vercel.json`, T5, T6, T8, T10, T12, T14 | ✅ · `test:server` 65/65, bug real de la cola `pendingWrite` destapado y arreglado | `memoria/22-copilot-profundo.md` |
 | **Pendientes** | T7 (moderación), T11 (semilla única, parte backend), T15 (PWA) | ⬜ T7/T15 · 🟡 T11 | — |
 | **T0** | verificación local ✅ (2026-10-01): `lint` · `vite build` · `test:ui` 40/40 · `test:server` 65/65 · `smoke:vercel` 43/43 · `verify:rls` n/a | 🟡 **falta el humo contra producción** (tras commit+push) | — |
+| **Ronda Copilot** (pensador) | T21-T26: BUG-01/02/03 + MEJ-01/02/03 | ✅ · `test:server` **84/84**, `smoke` 43/43, `lint` ✅ | `plan-copilot-2026-10-01.md`, `memoria/24`, `memoria/25` |
+
+---
+
+## Ronda del pensador principal (Copilot CLI) — 2026-10-01 · T21-T26
+
+> Plan completo en [`plan-copilot-2026-10-01.md`](plan-copilot-2026-10-01.md):
+> `copilot -p` leyó memorias, tableros, auditorías y código, y decidió 3 bugs
+> y 3 mejoras (registrados además como FAL-16..18 / FEAT-13..15 en la
+> auditoría). Reparto: T21-T23 backend ∥ T24-T26 frontend (paralelos, sin
+> compartir ficheros); cierre con la puerta habitual.
+
+### T21 · BUG-01 (P1) · Apoyo que responde éxito sin persistir — **agente-backend** · ✅
+
+`server/handlers/needsSupport.ts`: con Supabase configurado pero la
+escritura sin confirmar (RPC transitoria agotada o `write.error` en el
+respaldo) el handler caía a `if (!handledInDb)`, mutaba la caché y
+respondía `success: true` (200) → el apoyo se perdía en un cold start de
+Vercel y el cliente lo daba por confirmado.
+**Hacer:** BD configurada + escritura no confirmada → `respondWriteFailure`
+(**503**) sin tocar caché ni set de supporters; el toggle en caché solo
+cuando **no** hay cliente Supabase; tests en `test-nucleos.mjs`.
+**Hecho cuando:** 503 ante fallo transitorio (nunca `success: true`), 200
+solo con confirmación, tests en verde y en rojo al sabotear.
+
+### T22 · BUG-03 (P3) · Contador truncado a 10 000 — **agente-backend** · ✅
+
+Mismo fichero: el respaldo sin RPC usaba `.limit(10_000)` + `rows.length`.
+**Hecho cuando:** conteo exacto PostgREST (`count: 'exact', head: true`) con
+guard → 503 si no hay recuento; test del camino fallback.
+
+### T23 · MEJ-01 · Contrato Express ↔ funciones Vercel — **agente-backend** · ✅
+
+**Hecho cuando:** sección nueva en `scripts/test-nucleos.mjs` que ejecuta los
+mismos escenarios contra Express y contra las funciones (`_orig`/`id`,
+espejos) exigiendo mismo status y cuerpo — 401/403/404/503 y persistencia —
+y `npm run test:server` queda en **84/84** dentro de la CI.
+
+### T24 · BUG-02 (P2) · Cola offline sin estado accionable — **agente-frontend** · ✅
+
+`src/context/AppContext.tsx`: un 4xx permanente solo se registraba y el
+ítem se quedaba `pending` para siempre.
+**Hecho cuando:** transitorio (red/5xx/429) sigue con 3 intentos; permanente
+(4xx salvo 401/408/429) → estado `failed` con payload intacto, Toast
+accionable «Reintentar»/«Descartar» (doble confirmación, `aria-live`); 401
+→ flujo `handleUnauthorized` existente; `test:ui` ✅.
+
+### T25 · MEJ-02 · Proximidad «Cerca de mí» — **agente-frontend** · ✅
+
+**Hecho cuando:** opción optativa **apagada por defecto** en mapa (filtra
+≤5 km y ordena por distancia) y tablón (barrio primero, centroide con `≈` y
+aclaración), sin dependencias ni orden por defecto alterado.
+
+### T26 · MEJ-03 · Alertas locales por barrio — **agente-frontend** · ✅
+
+El refresco solo corría con error/pendientes.
+**Hecho cuando:** suscripción optativa persistida en localStorage, sondeo
+acotado (75 s, GET existente) deduplicado por ID con aviso `Toast`, sin
+enviar coordenadas del navegador y sin funciones Vercel nuevas.
 
 ---
 

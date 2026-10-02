@@ -227,3 +227,48 @@ colectivos. No existe. *Esfuerzo:* medio.
 - **Pendiente:** smoke contra prod (condicionado a commit+push).
 - Advertencia: la CI verde no cubre FAL-01..FAL-06 ni FAL-09..FAL-13:
   son fallos de diseño que ningún test actual ejercita.
+
+## Segunda pasada (2026-10-01, revisión con Copilot como pensador principal)
+
+> `copilot -p` leyó memorias, tableros, auditorías y el código actual; su plan
+> completo vive en `plan-copilot-2026-10-01.md` y sus tareas en el tablero
+> (T21-T26). Todo cerrado el mismo día.
+
+### FAL-16 · Apoyo que responde éxito sin persistir (P1) — ✅
+
+`server/handlers/needsSupport.ts:182-200`: con Supabase configurado pero la
+escritura sin confirmar (RPC transitoria agotada o `write.error` en el
+respaldo) el handler caía a `if (!handledInDb)`, mutaba solo la caché y
+respondía `success: true` (200). En Vercel la memoria no es persistencia: el
+apoyo se perdía en un cold start y el cliente lo daba por confirmado.
+*Arreglado en T21* (503 sin tocar caché; caché solo sin BD).
+
+### FAL-17 · Cola offline: rechazo permanente sin estado accionable (P2) — ✅
+
+`src/context/AppContext.tsx:201,857-889`: un 4xx permanente solo se
+registraba; el ítem se quedaba `pending` para siempre (3 reintentos agotados)
+sin forma de corregirlo o descartarlo.
+*Arreglado en T24* (estado `failed` + Toast Reintentar/Descartar).
+
+### FAL-18 · Contador de apoyos truncado a 10 000 (P3) — ✅
+
+`needsSupport.ts:149-165`: el respaldo sin RPC usaba `.limit(10_000)` +
+`rows.length` como total.
+*Arreglado en T22* (conteo exacto PostgREST).
+
+### FEAT-13 · Test de contrato Express ↔ funciones Vercel (valor ALTO) — ✅
+
+Paridad de escenarios (401/403/404/503, rewrites) entre ambos adaptadores;
+hoy en `test-nucleos.mjs` (sección M) dentro de `test:server` (84/84).
+*Hecho en T23.*
+
+### FEAT-14 · Proximidad «Cerca de mí» en mapa y tablón (valor ALTO) — ✅
+
+Orden/filtro optativo por distancia (barrio primero, centroide con `≈`),
+apagado por defecto. *Hecho en T25.*
+
+### FEAT-15 · Alertas locales por barrio (valor ALTO) — ✅
+
+Sondeo optativo y deduplicado del GET existente para avisar de necesidades
+nuevas del barrio, sin coordenadas salientes ni funciones nuevas.
+*Hecho en T26.*

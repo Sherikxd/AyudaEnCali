@@ -8,6 +8,7 @@ import { useApp, useMapUI } from '../context/AppContext';
 import { HelpCategory, HelpPoint, PointStatus } from '../types';
 import { MapDashboardSummary } from './MapDashboardSummary';
 import { escapeHtml } from '../utils/sanitize';
+import { isApproximateOrigin } from '../utils/proximity';
 import { 
   Search, 
   Crosshair, 
@@ -29,6 +30,14 @@ import {
 } from 'lucide-react';
 
 type MapLayerType = 'streets' | 'light' | 'satellite';
+
+/**
+ * MEJ-02 · «Cerca de mí»: radio del filtro optativo por proximidad (en km).
+ * Cali mide ~20 km de norte a sur, así que 5 km cubre la zona central sin
+ * vaciar el listado. El filtro está **apagado por defecto**: el orden por
+ * defecto es el de siempre.
+ */
+const NEAR_ME_MAX_KM = 5;
 
 const MAP_LAYERS: Record<MapLayerType, { name: string; url: string; subdomains?: string; maxZoom: number }> = {
   streets: {
@@ -268,6 +277,12 @@ export const MapView: React.FC = () => {
 
   const [selectedCategory, setSelectedCategory] = useState<HelpCategory | 'all'>('all');
   const [searchQuery, setSearchQuery] = useState('');
+  /**
+   * MEJ-02 · orden/filtro optativo por distancia: apagado por defecto para
+   * conservar el orden actual; activo, lista y mapa muestran primero lo que
+   * está a menos de `NEAR_ME_MAX_KM` km, del más cercano al más lejano.
+   */
+  const [nearMeOnly, setNearMeOnly] = useState(false);
   const [showListViewDesktop, setShowListViewDesktop] = useState(true);
   const [currentLayer, setCurrentLayer] = useState<MapLayerType>('streets');
   const [showLayerMenu, setShowLayerMenu] = useState(false);
@@ -354,7 +369,7 @@ export const MapView: React.FC = () => {
 
   // Filtered points
   const filteredPoints = useMemo(() => {
-    return helpPoints.filter((point) => {
+    const base = helpPoints.filter((point) => {
       const matchCat = selectedCategory === 'all' || point.category === selectedCategory;
       const q = searchQuery.toLowerCase().trim();
       const matchSearch =
@@ -366,7 +381,28 @@ export const MapView: React.FC = () => {
         point.urgentItems.some((item) => item.toLowerCase().includes(q));
       return matchCat && matchSearch;
     });
-  }, [helpPoints, selectedCategory, searchQuery]);
+
+    // MEJ-02: «Cerca de mí» es optativo y, mientras esté apagado, el orden
+    // es exactamente el de siempre (el del servidor/la fusión).
+    if (!nearMeOnly) return base;
+
+    const ranked = base
+      .map((point, index) => ({ point, index, km: calculateDistance(point.lat, point.lng) }))
+      // Sin ubicación no se filtra (no se esconden datos sin poder medirlos).
+      .filter((entry) => entry.km === null || entry.km <= NEAR_ME_MAX_KM);
+    ranked.sort((a, b) => {
+      if (a.km === null && b.km === null) return a.index - b.index;
+      if (a.km === null) return 1;
+      if (b.km === null) return -1;
+      return a.km === b.km ? a.index - b.index : a.km - b.km;
+    });
+    return ranked.map((entry) => entry.point);
+    // `calculateDistance` mide contra `userLocation`: si cambia la ubicación
+    // hay que reordenar.
+  }, [helpPoints, selectedCategory, searchQuery, nearMeOnly, calculateDistance, userLocation]);
+
+  /** ¿La distancia de la lista es aproximada (origen en centroide, MEJ-02)? */
+  const distanceIsApprox = isApproximateOrigin(userLocation);
 
   // Initialize Leaflet Map
   useEffect(() => {
@@ -747,6 +783,23 @@ export const MapView: React.FC = () => {
               </span>
             </div>
           </div>
+
+          {/* MEJ-02: orden/filtro optativo por proximidad (apagado por defecto). */}
+          <button
+            type="button"
+            onClick={() => setNearMeOnly((prev) => !prev)}
+            aria-pressed={nearMeOnly}
+            title={`Mostrar solo los centros a menos de ${NEAR_ME_MAX_KM} km, del más cercano al más lejano`}
+            className={`shrink-0 px-2.5 py-1 rounded-lg text-[11px] font-bold transition-colors flex items-center gap-1 active:scale-95 ${
+              nearMeOnly
+                ? 'bg-orange-600 text-white shadow-sm'
+                : 'bg-slate-100 hover:bg-slate-200 text-slate-600'
+            }`}
+          >
+            <Navigation className="w-3 h-3" aria-hidden="true" />
+            Cerca de mí
+          </button>
+
           <button
             type="button"
             onClick={() => setIsLocationModalOpen(true)}
@@ -909,6 +962,8 @@ export const MapView: React.FC = () => {
               </h2>
               <p className="text-xs text-slate-500">
                 {selectedCategory === 'all' ? 'Todos los sectores' : categoryLabels[selectedCategory]}
+                {nearMeOnly &&
+                  ` · Cerca de mí (≤ ${NEAR_ME_MAX_KM} km, del más cercano al más lejano)`}
               </p>
             </div>
             <button
@@ -972,7 +1027,18 @@ export const MapView: React.FC = () => {
                             {dist !== null && (
                               <>
                                 <span aria-hidden="true">·</span>
-                                <span className="font-mono tabular-nums text-orange-600 font-semibold">
+                                <span
+                                  className="font-mono tabular-nums text-orange-600 font-semibold"
+                                  title={
+                                    distanceIsApprox
+                                      ? 'Distancia aproximada: mide desde el centro de tu barrio, no desde tu punto exacto'
+                                      : undefined
+                                  }
+                                >
+                                  {distanceIsApprox && (
+                                    <span className="sr-only">(distancia aproximada) </span>
+                                  )}
+                                  {distanceIsApprox && '≈ '}
                                   {dist} km
                                 </span>
                               </>

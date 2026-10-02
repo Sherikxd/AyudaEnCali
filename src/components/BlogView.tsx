@@ -3,6 +3,7 @@ import { useUser } from '@clerk/clerk-react';
 import { useApp } from '../context/AppContext';
 import { HelpCategory, HelpNeed, NeedUrgency } from '../types';
 import { CDN_IMAGES } from '../config/images';
+import { barrioLabel, formatKm, needDistanceKm, sameBarrio } from '../utils/proximity';
 import { 
   Plus, 
   Search, 
@@ -19,6 +20,8 @@ import {
   Archive,
   ArchiveRestore,
   RotateCcw,
+  MapPin,
+  BellRing,
 } from 'lucide-react';
 
 export const BlogView: React.FC = () => {
@@ -32,6 +35,9 @@ export const BlogView: React.FC = () => {
     openAuthModal,
     updateNeed,
     deleteNeed,
+    userLocation,
+    needAlertsEnabled,
+    setNeedAlertsEnabled,
   } = useApp();
 
   // El apoyo exige cuenta: se usa solo para el texto de ayuda («inicia
@@ -46,6 +52,11 @@ export const BlogView: React.FC = () => {
     'all' | 'alta' | HelpCategory | 'resuelta' | 'archivada'
   >('all');
   const [searchQuery, setSearchQuery] = useState('');
+  /**
+   * MEJ-02 · «Cerca de mí»: orden por cercanía **apagado por defecto** para
+   * conservar el orden actual del tablón.
+   */
+  const [nearMe, setNearMe] = useState(false);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   /** Necesidad en edición y borrador de su formulario. */
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -78,6 +89,37 @@ export const BlogView: React.FC = () => {
       return need.category === activeFilter && need.status !== 'resuelta' && need.status !== 'archivada';
     });
   }, [helpNeeds, activeFilter, searchQuery]);
+
+  /**
+   * MEJ-02 · «Cerca de mí»: orden **optativo** por proximidad, apagado por
+   * defecto (mientras esté así se pinta `filteredNeeds`, con el orden de
+   * siempre). Activo:
+   *
+   *  1. primero las necesidades del **barrio coincidente** con el usuario;
+   *  2. después por distancia al **centroide** del barrio (las necesidades
+   *     no llevan coordenadas, así que la distancia es siempre aproximada
+   *     y así se etiqueta).
+   */
+  const renderedNeeds = useMemo(() => {
+    if (!nearMe) return filteredNeeds;
+
+    const myBarrio = userLocation?.barrio || userProfile.barrio;
+    const ranked = filteredNeeds.map((need, index) => ({
+      need,
+      index,
+      mine: sameBarrio(need.barrio, myBarrio),
+      km: needDistanceKm(userLocation, need),
+    }));
+    ranked.sort((a, b) => {
+      if (a.mine !== b.mine) return a.mine ? -1 : 1;
+      if (a.km === null && b.km === null) return a.index - b.index;
+      if (a.km === null) return 1;
+      if (b.km === null) return -1;
+      if (a.km !== b.km) return a.km - b.km;
+      return a.index - b.index; // orden estable entre empates
+    });
+    return ranked.map((entry) => entry.need);
+  }, [filteredNeeds, nearMe, userLocation, userProfile.barrio]);
 
   const activeCount = useMemo(
     () => helpNeeds.filter((n) => n.status !== 'resuelta' && n.status !== 'archivada').length,
@@ -329,12 +371,68 @@ export const BlogView: React.FC = () => {
             >
               🗄 Archivadas
             </button>
+
+            <span className="w-px h-5 bg-slate-200 shrink-0 mx-0.5" aria-hidden="true" />
+
+            {/* MEJ-02: orden optativo por proximidad (apagado por defecto). */}
+            <button
+              type="button"
+              onClick={() => setNearMe((prev) => !prev)}
+              aria-pressed={nearMe}
+              title="Ordenar primero las necesidades de tu barrio y después por distancia aproximada"
+              className={`px-3.5 py-2 text-xs font-bold rounded-xl transition-colors whitespace-nowrap flex items-center gap-1 ${
+                nearMe
+                  ? 'bg-orange-600 text-white'
+                  : 'bg-orange-50 text-orange-700 hover:bg-orange-100'
+              }`}
+            >
+              <MapPin className="w-3.5 h-3.5" aria-hidden="true" />
+              <span>Cerca de mí</span>
+            </button>
+
+            {/* MEJ-03: suscripción optativa a avisos de nuevas necesidades. */}
+            <button
+              type="button"
+              onClick={() => setNeedAlertsEnabled(!needAlertsEnabled)}
+              aria-pressed={needAlertsEnabled}
+              title="Avisarme cuando aparezcan nuevas necesidades en mi barrio o cerca de mí"
+              className={`px-3.5 py-2 text-xs font-bold rounded-xl transition-colors whitespace-nowrap flex items-center gap-1 ${
+                needAlertsEnabled
+                  ? 'bg-emerald-600 text-white'
+                  : 'bg-emerald-50 text-emerald-700 hover:bg-emerald-100'
+              }`}
+            >
+              <BellRing className="w-3.5 h-3.5" aria-hidden="true" />
+              <span>Avisos de barrio</span>
+            </button>
           </div>
         </div>
 
+        {/* Aclaración de lo que están haciendo los dos interruptores. */}
+        {(nearMe || needAlertsEnabled) && (
+          <p className="-mt-2 text-[11px] font-semibold text-slate-500 leading-relaxed">
+            {nearMe && (
+              <>
+                <span className="text-orange-700">Ordenado por cercanía:</span> primero tu barrio
+                {barrioLabel(userLocation?.barrio || userProfile.barrio) !== '' && (
+                  <> ({barrioLabel(userLocation?.barrio || userProfile.barrio)})</>
+                )}
+                , después por distancia aproximada al centro del barrio.
+              </>
+            )}
+            {nearMe && needAlertsEnabled && ' '}
+            {needAlertsEnabled && (
+              <span className="text-emerald-700">
+                Avisos activos: te avisaremos cuando lleguen nuevas necesidades de tu barrio o de
+                las más cercanas.
+              </span>
+            )}
+          </p>
+        )}
+
         {/* Needs Feed List */}
         <div className="mt-8 space-y-5">
-          {filteredNeeds.length === 0 ? (
+          {renderedNeeds.length === 0 ? (
             <div className="p-12 text-center bg-white rounded-3xl border border-slate-100 shadow-sm">
               <p className="text-sm font-bold text-slate-800">No se encontraron reportes con estos criterios</p>
               <p className="text-xs text-slate-500 mt-1">
@@ -348,8 +446,11 @@ export const BlogView: React.FC = () => {
               </button>
             </div>
           ) : (
-            filteredNeeds.map((need) => {
+            renderedNeeds.map((need) => {
               const isResolved = need.status === 'resuelta';
+              // MEJ-02: distancia solo cuando el orden por cercanía está activo.
+              const distanceKm = nearMe ? needDistanceKm(userLocation, need) : null;
+              const isMyBarrio = nearMe && sameBarrio(need.barrio, userLocation?.barrio || userProfile.barrio);
               return (
                 <article
                   key={need.id}
@@ -411,6 +512,34 @@ export const BlogView: React.FC = () => {
                             ? 'Urgencia Media'
                             : 'Normal'}
                         </span>
+                        {/* MEJ-02: con «Cerca de mí» se muestra la proximidad;
+                            las necesidades no tienen coordenadas, así que la
+                            distancia va al centroide del barrio → aproximada. */}
+                        {nearMe && (
+                          <>
+                            <span aria-hidden="true">·</span>
+                            <span
+                              className="font-semibold text-orange-600 flex items-center gap-1"
+                              title={
+                                isMyBarrio
+                                  ? `Necesidad de tu barrio (${need.barrio})`
+                                  : 'Distancia aproximada al centro del barrio, no a un punto exacto'
+                              }
+                            >
+                              <MapPin className="w-3 h-3" aria-hidden="true" />
+                              {isMyBarrio ? (
+                                'Tu barrio'
+                              ) : distanceKm !== null ? (
+                                <>
+                                  ≈ {formatKm(distanceKm)}
+                                  <span className="sr-only"> (distancia aproximada)</span>
+                                </>
+                              ) : (
+                                'Sin barrio en Cali'
+                              )}
+                            </span>
+                          </>
+                        )}
                         {isResolved && (
                           <>
                             <span aria-hidden="true">·</span>

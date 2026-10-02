@@ -5,10 +5,15 @@
  *
  * Diseño (hereda las lecciones de los harnesses de `/tmp` del log 19):
  *
- *  - **Sin Express ni servidor**: los núcleos de `server/handlers/*` se
- *    importan como módulos y reciben un `ApiRequest` + `JsonResponder`
- *    falsos; la respuesta se construye igual que `mount()` de
- *    `server/app.ts` (`ApiResult` → status/json, `null` = ya respondió).
+ *  - **Sin Express ni servidor** (secciones A–L): los núcleos de
+ *    `server/handlers/*` se importan como módulos y reciben un `ApiRequest`
+ *    + `JsonResponder` falsos; la respuesta se construye igual que `mount()`
+ *    de `server/app.ts` (`ApiResult` → status/json, `null` = ya respondió).
+ *    La sección **M** (contrato Express ↔ funciones Vercel, MEJ-01) es la
+ *    excepción a propósito: levanta Express por HTTP real e invoca las
+ *    funciones `api/*.ts` con `req`/`res` falsos para exigir que respondan
+ *    idéntico (incluidos los tests de BUG-01 y BUG-03, que ahí sí usan un
+ *    cliente Supabase de mentira apuntando al stub del `fetch` global).
  *  - **Sin tocar la BD**: el cliente de Supabase solo se crea en
  *    `initSupabase()` (via `server/bootstrap.ts`), que este script **no**
  *    importa — todo corre contra la caché en memoria. Además se fuerzan
@@ -30,6 +35,7 @@
  */
 import { generateKeyPairSync, sign as cryptoSign } from 'node:crypto';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import http from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { JSDOM } from 'jsdom';
@@ -86,10 +92,74 @@ const jsonResponse = (payload, status = 200) =>
     headers: { 'content-type': 'application/json' },
   });
 
+/** Fetch nativo, guardado ANTES del stub: lo usa la sección M contra Express. */
+const realFetch = globalThis.fetch;
+
+/**
+ * Falso Supabase de la sección M (fases «con BD»): `initSupabase()` apunta
+ * el cliente a esta URL y el stub de `globalThis.fetch` responde en su
+ * nombre.
+ *
+ *  - `down` → la RPC de apoyos LANZA `fetch failed` (error transitorio
+ *    agotado): escenario del BUG-01 (BD configurada + escritura no
+ *    confirmada).
+ *  - `missing-rpc-write-down` → la RPC responde 404 `PGRST205` (esquema
+ *    anterior) PERO el respaldo directo (`upsert`) también falla: la otra
+ *    reproducción del BUG-01.
+ *  - `missing-rpc` → la RPC responde 404 `PGRST205` y el respaldo directo
+ *    funciona: activa el conteo exacto (BUG-03).
+ */
+const SUPABASE_TEST_URL = 'http://supabase.test';
+let supabaseScenario = 'down';
+/** Recuento «real» de la BD falsa: > 10 000 para demostrar que ya no se trunca. */
+const EXACT_COUNT = 12_345;
+
+/** Respuestas del falso PostgREST (solo se usa tras `initSupabase()`). */
+function supabaseStub(url, init) {
+  const method = String(init?.method ?? 'GET').toUpperCase();
+
+  if (url.includes('/rest/v1/rpc/toggle_need_support')) {
+    if (supabaseScenario === 'down') throw new TypeError('fetch failed');
+    return jsonResponse(
+      {
+        code: 'PGRST205',
+        message: 'Could not find the function public.toggle_need_support(p_need_id, p_user_id, p_action)',
+      },
+      404,
+    );
+  }
+
+  if (url.includes('/rest/v1/need_supporters')) {
+    // El respaldo directo del BUG-01 también caído (RPC ausente + upsert roto).
+    if (method === 'POST' && supabaseScenario === 'missing-rpc-write-down') throw new TypeError('fetch failed');
+    // Conteo exacto (BUG-03): HEAD con `content-range` como PostgREST.
+    if (method === 'HEAD') {
+      return new Response(null, { status: 200, headers: { 'content-range': `0/${EXACT_COUNT}` } });
+    }
+    // Viejo camino `.limit(10_000)`: solo 2 filas → el truncado saldría en rojo.
+    if (method === 'GET' && url.includes('limit=10000')) {
+      return jsonResponse([{ need_id: 'legacy-1' }, { need_id: 'legacy-2' }]);
+    }
+    // Sondas de esquema y el respaldo directo con `.select()` (upsert/delete).
+    return jsonResponse([]);
+  }
+
+  if (url.includes('/rest/v1/help_needs')) {
+    if (method === 'PATCH') return new Response(null, { status: 204 });
+    if (method === 'POST') return new Response(null, { status: 201 });
+    return jsonResponse([]);
+  }
+
+  // Cualquier otra tabla del esquema (sondeos incluidos): OK vacío.
+  return jsonResponse([]);
+}
+
 globalThis.fetch = async (input, init) => {
   const url = typeof input === 'string' ? input : (input?.url ?? String(input));
   // JWKS de Clerk para verifyToken (auth.ts) — sin salir de la máquina.
   if (url.includes('api.clerk.com') && url.includes('/jwks')) return jsonResponse({ keys: [jwk] });
+  // BD falsa de la sección M (antes de los casos del cliente: no se solapan).
+  if (url.startsWith(`${SUPABASE_TEST_URL}/`)) return supabaseStub(url, init);
   // Apoyo del cliente (`POST /api/needs/<id>/support`): recuento del servidor.
   // El stub exige además el método y el Bearer: si la app dejara de mandar
   // identidad, el check de recuento fallaría en vez de dar un falso positivo.
@@ -199,9 +269,11 @@ async function call(handler, { method = 'GET', path, query = {}, body, headers =
 const sameText = (got, want) => (got ?? null) === want;
 
 let rootEl = null;
+let expressServer = null;
 try {
   /* ------------------------------------------------ 4. Carga de núcleos */
-  const { getSupabaseClient, respondWriteFailure } = await vite.ssrLoadModule('/server/supabase.ts');
+  const { getSupabaseClient, initSupabase, respondWriteFailure } = await vite.ssrLoadModule('/server/supabase.ts');
+  const { memory, getSupporterSet } = await vite.ssrLoadModule('/server/store.ts');
   const { clientIp } = await vite.ssrLoadModule('/server/http.ts');
   const { needsHandler } = await vite.ssrLoadModule('/server/handlers/needs.ts');
   const { pointsHandler } = await vite.ssrLoadModule('/server/handlers/points.ts');
@@ -581,10 +653,361 @@ try {
     !appCtx.supportedNeedIds.includes(discardNeed) && appCtx.isAuthModalOpen === false,
     `supported=${JSON.stringify(appCtx.supportedNeedIds)}`,
   );
+
+  /* --------------- M. Contrato Express ↔ funciones Vercel (MEJ-01 + BUGs) */
+  // Escenarios idénticos ejecutados contra LOS DOS adaptadores: Express
+  // (HTTP real contra `server/app.ts`) y las funciones de Vercel (`api/*.ts`
+  // con el adaptador `server/vercel.ts`, usando las URLs que producen los
+  // rewrites de `vercel.json`). El contrato exige el MISMO status y el MISMO
+  // cuerpo. Aquí viven también los tests de BUG-01 (503 con BD configurada;
+  // caché intacta) y BUG-03 (respaldo con conteo exacto sin truncar).
+  const IP_M = '198.51.100.40';
+  const AUTH_AUTHOR = { authorization: `Bearer ${JWT_AUTHOR}` };
+  const AUTH_OTHER = { authorization: `Bearer ${JWT_OTHER}` };
+  const SIN_SESION_APOYO = 'Debes iniciar sesión para apoyar una necesidad.';
+  const BD_CAIDA = 'La base de datos no está disponible. Inténtalo de nuevo en unos segundos.';
+  const contratoNeed = 'contrato-need-1';
+  const contratoNeedRef = () => memory.needs.find((item) => item.id === contratoNeed);
+  const authorInSupporters = () => getSupporterSet(contratoNeed).has('user_nuc_author');
+
+  const { app: expressApp } = await vite.ssrLoadModule('/server/app.ts');
+  expressServer = http.createServer(expressApp);
+  await new Promise((resolve) => expressServer.listen(0, '127.0.0.1', resolve));
+  const expressBase = `http://127.0.0.1:${expressServer.address().port}`;
+
+  // Cada función de Vercel se invoca con la URL que su rewrite le entrega
+  // (o con la del espejo filesystem, cuando no hay rewrite).
+  const vercelRoutes = {
+    '/api/needs-support': (await vite.ssrLoadModule('/api/needs-support.ts')).default,
+    '/api/needs': (await vite.ssrLoadModule('/api/needs.ts')).default,
+    '/api/support-mine': (await vite.ssrLoadModule('/api/support-mine.ts')).default,
+  };
+
+  /** Petición HTTP real al servidor Express de esta sección. */
+  async function callExpress({ method = 'GET', path, headers = {}, body }) {
+    const finalHeaders = { ...headers };
+    let payload;
+    if (body !== undefined) {
+      finalHeaders['content-type'] = 'application/json';
+      payload = JSON.stringify(body);
+    }
+    const response = await realFetch(`${expressBase}${path}`, { method, headers: finalHeaders, body: payload });
+    const text = await response.text();
+    let parsed = text;
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      /* sin JSON se compara el texto crudo */
+    }
+    return { status: response.status, body: parsed };
+  }
+
+  /**
+   * Petición a una función de Vercel: `req` con la URL que le deja el rewrite
+   * (`_orig` + `id`) o la del espejo filesystem, cuerpo ya pre-parseado (como
+   * el runtime) y la misma `res` falsa del resto del harness.
+   */
+  async function callVercel({ method = 'GET', vurl, headers = {}, body }) {
+    const pathname = new URL(vurl, 'http://vercel.local').pathname;
+    const handler = vercelRoutes[pathname];
+    if (!handler) return { status: -1, body: { error: `sin función registrada para ${pathname}` } };
+    const res = fakeRes();
+    const req = { method, url: vurl, headers: { ...headers }, socket: { remoteAddress: '127.0.0.1' } };
+    if (body !== undefined) {
+      req.headers['content-type'] = 'application/json';
+      req.body = body;
+    }
+    await handler(req, res);
+    return { status: res.statusCode, body: res.body };
+  }
+
+  /**
+   * Ejecuta el mismo escenario en ambos adaptadores: el contrato exige el
+   * MISMO status y el MISMO cuerpo (JSON idéntico). `expectativa(result)`,
+   * si se pasa, debe cumplirse en LAS DOS respuestas (devuelve `true` o un
+   * detalle del fallo).
+   */
+  async function contrato(name, spec, expectativa) {
+    const viaExpress = await callExpress(spec);
+    const viaVercel = await callVercel(spec);
+    let ok =
+      viaExpress.status === viaVercel.status &&
+      JSON.stringify(viaExpress.body) === JSON.stringify(viaVercel.body);
+    let detail = `express=${viaExpress.status} vercel=${viaVercel.status}`;
+    if (typeof expectativa === 'function') {
+      for (const [side, result] of [
+        ['express', viaExpress],
+        ['vercel', viaVercel],
+      ]) {
+        const failure = expectativa(result);
+        if (failure !== true) {
+          ok = false;
+          detail += ` · ${side}: ${failure}`;
+        }
+      }
+    }
+    check(name, ok, `${detail} :: ${JSON.stringify(viaExpress.body)}`);
+    return { viaExpress, viaVercel };
+  }
+
+  // Semilla de la sección: creada en caché (sin BD) para que los dos
+  // adaptadores lean exactamente la misma fila en memoria.
+  const m0 = await call(needsHandler, {
+    method: 'POST',
+    path: '/needs',
+    headers: AUTH_AUTHOR,
+    body: { id: contratoNeed, title: 'Necesidad del contrato Express ↔ Vercel', barrio: 'El Poblado 2' },
+    clientIp: IP_M,
+  });
+  check(
+    'M0 semilla: POST /needs crea la necesidad de la sección (201)',
+    m0.status === 201 && m0.body?.need?.id === contratoNeed,
+    `status=${m0.status} ${JSON.stringify(m0.body)}`,
+  );
+
+  // --- BUG-01 · modo sin BD: el toggle en caché sigue documentado y verde ---
+  const m1 = await call(needsSupportHandler, {
+    method: 'POST',
+    path: `/needs/${contratoNeed}/support`,
+    headers: AUTH_AUTHOR,
+    body: { action: 'add' },
+    clientIp: IP_M,
+  });
+  check(
+    'M1 BUG-01 sin BD → 200 de caché (modo sin cliente Supabase)',
+    m1.status === 200 && m1.body?.success === true && m1.body?.count === 1 && m1.body?.supported === true,
+    `status=${m1.status} count=${m1.body?.count}`,
+  );
+  const m2 = await call(needsSupportHandler, {
+    method: 'POST',
+    path: `/needs/${contratoNeed}/support`,
+    headers: AUTH_AUTHOR,
+    body: { action: 'remove' },
+    clientIp: IP_M,
+  });
+  check(
+    'M2 …y «remove» vuelve a 0 (toggle idempotente sin BD)',
+    m2.status === 200 && m2.body?.count === 0 && m2.body?.supported === false,
+    `status=${m2.status} count=${m2.body?.count}`,
+  );
+
+  // --- Contrato sin BD: 401 / 403 / 404 canónico / 404 espejo / éxitos ---
+  await contrato(
+    'M3 contrato 401 sin sesión: canónico vs rewrite `_orig`+`id` (pierde el id → sería 404)',
+    {
+      method: 'POST',
+      path: `/api/needs/${contratoNeed}/support`,
+      vurl: `/api/needs-support?_orig=needs/${contratoNeed}/support&id=${contratoNeed}`,
+      body: { action: 'add' },
+    },
+    (r) =>
+      r.status === 401 && sameText(r.body?.error, SIN_SESION_APOYO)
+        ? true
+        : `401 esperado, llegó ${r.status} ${JSON.stringify(r.body)}`,
+  );
+  await contrato(
+    'M4 contrato: la función ve SOLO `_orig` (URL de destino) y aún así llega el id',
+    {
+      method: 'POST',
+      path: `/api/needs/${contratoNeed}/support`,
+      vurl: `/api/needs-support?_orig=needs/${contratoNeed}/support`,
+      body: { action: 'add' },
+    },
+    (r) =>
+      r.status === 401 && sameText(r.body?.error, SIN_SESION_APOYO)
+        ? true
+        : `401 esperado, llegó ${r.status} ${JSON.stringify(r.body)}`,
+  );
+  await contrato(
+    'M5 contrato: espejo filesystem `/api/needs-support?id=` → 404 como Express',
+    {
+      method: 'POST',
+      path: `/api/needs-support?id=${contratoNeed}`,
+      vurl: `/api/needs-support?id=${contratoNeed}`,
+      headers: AUTH_AUTHOR,
+      body: { action: 'add' },
+    },
+    (r) =>
+      r.status === 404 && sameText(r.body?.error, 'Ruta no encontrada: POST /needs-support')
+        ? true
+        : `404 canónico esperado, llegó ${r.status} ${JSON.stringify(r.body)}`,
+  );
+  await contrato(
+    'M6 contrato: PATCH de quien NO es autor → 403 en ambos',
+    {
+      method: 'PATCH',
+      path: `/api/needs/${contratoNeed}`,
+      vurl: `/api/needs?_orig=needs/${contratoNeed}&id=${contratoNeed}`,
+      headers: AUTH_OTHER,
+      body: { status: 'resuelta' },
+    },
+    (r) =>
+      r.status === 403 && sameText(r.body?.error, 'Solo quien publicó la necesidad puede modificarla.')
+        ? true
+        : `403 esperado, llegó ${r.status} ${JSON.stringify(r.body)}`,
+  );
+  await contrato(
+    'M7 contrato: GET con id (método no soportado) → 404 canónico en ambos',
+    {
+      method: 'GET',
+      path: `/api/needs/${contratoNeed}`,
+      vurl: `/api/needs?_orig=needs/${contratoNeed}&id=${contratoNeed}`,
+    },
+    (r) =>
+      r.status === 404 && sameText(r.body?.error, `Ruta no encontrada: GET /needs/${contratoNeed}`)
+        ? true
+        : `404 canónico esperado, llegó ${r.status} ${JSON.stringify(r.body)}`,
+  );
+  await contrato(
+    'M8 contrato: espejo GET `/api/support-mine` → 404 como Express',
+    { method: 'GET', path: '/api/support-mine', vurl: '/api/support-mine' },
+    (r) =>
+      r.status === 404 && sameText(r.body?.error, 'Ruta no encontrada: GET /support-mine')
+        ? true
+        : `404 espejo esperado, llegó ${r.status} ${JSON.stringify(r.body)}`,
+  );
+  await contrato(
+    'M9 contrato: apoyo con sesión (canónico vs rewrite) → 200 y mismo recuento',
+    {
+      method: 'POST',
+      path: `/api/needs/${contratoNeed}/support`,
+      vurl: `/api/needs-support?_orig=needs/${contratoNeed}/support&id=${contratoNeed}`,
+      headers: AUTH_AUTHOR,
+      body: { action: 'add' },
+    },
+    (r) =>
+      r.status === 200 && r.body?.success === true && r.body?.count === 1 && r.body?.supported === true
+        ? true
+        : `200/count=1 esperados, llegó ${r.status} ${JSON.stringify(r.body)}`,
+  );
+  await contrato(
+    'M10 contrato: retirar el apoyo en ambos adaptadores → 200 y vuelve a 0',
+    {
+      method: 'POST',
+      path: `/api/needs/${contratoNeed}/support`,
+      vurl: `/api/needs-support?_orig=needs/${contratoNeed}/support&id=${contratoNeed}`,
+      headers: AUTH_AUTHOR,
+      body: { action: 'remove' },
+    },
+    (r) =>
+      r.status === 200 && r.body?.count === 0 && r.body?.supported === false
+        ? true
+        : `count=0 esperado, llegó ${r.status} ${JSON.stringify(r.body)}`,
+  );
+
+  // --- BUG-01 · con BD: escritura NO confirmada → 503, nunca caché ---
+  // El cliente de Supabase se crea apuntando al stub del fetch global
+  // (`supabaseStub`): la RPC de apoyos lanzará `fetch failed` (transitoria).
+  process.env.SUPABASE_URL = SUPABASE_TEST_URL;
+  process.env.SUPABASE_SERVICE_ROLE_KEY = 'test-service-role-key';
+  initSupabase();
+  check('M11 la fase «con BD» instala el cliente de Supabase', getSupabaseClient() !== null);
+
+  const intactCount = contratoNeedRef()?.supportersCount;
+  const m12 = await call(needsSupportHandler, {
+    method: 'POST',
+    path: `/needs/${contratoNeed}/support`,
+    headers: AUTH_AUTHOR,
+    body: { action: 'add' },
+    clientIp: IP_M,
+  });
+  check(
+    'M12 BUG-01 BD configurada + fallo transitorio → 503, sin success: true',
+    m12.status === 503 && m12.body?.success === undefined && sameText(m12.body?.error, BD_CAIDA),
+    `status=${m12.status} body=${JSON.stringify(m12.body)}`,
+  );
+  check(
+    'M13 BUG-01 el 503 NO muta la caché ni el set de supporters',
+    contratoNeedRef()?.supportersCount === intactCount && !authorInSupporters(),
+    `count=${contratoNeedRef()?.supportersCount} (esperado ${intactCount})`,
+  );
+
+  await contrato(
+    'M14 contrato: el 503 de persistencia (BUG-01) es idéntico en ambos adaptadores',
+    {
+      method: 'POST',
+      path: `/api/needs/${contratoNeed}/support`,
+      vurl: `/api/needs-support?_orig=needs/${contratoNeed}/support&id=${contratoNeed}`,
+      headers: AUTH_AUTHOR,
+      body: { action: 'add' },
+    },
+    (r) =>
+      r.status === 503 && r.body?.success === undefined && sameText(r.body?.error, BD_CAIDA)
+        ? true
+        : `503 esperado, llegó ${r.status} ${JSON.stringify(r.body)}`,
+  );
+  check(
+    'M15 BUG-01 tras el 503 en Express y en Vercel la caché sigue intacta',
+    contratoNeedRef()?.supportersCount === intactCount && !authorInSupporters(),
+    `count=${contratoNeedRef()?.supportersCount} (esperado ${intactCount})`,
+  );
+
+  // BUG-01 · la OTRA reproducción: RPC ausente (esquema antiguo) pero el
+  // respaldo directo (`upsert`) también falla → sigue sin confirmarse nada.
+  supabaseScenario = 'missing-rpc-write-down';
+  const m16 = await call(needsSupportHandler, {
+    method: 'POST',
+    path: `/needs/${contratoNeed}/support`,
+    headers: AUTH_AUTHOR,
+    body: { action: 'add' },
+    clientIp: IP_M,
+  });
+  check(
+    'M16 BUG-01 respaldo directo con write.error → 503, sin success y sin tocar la caché',
+    m16.status === 503 &&
+      m16.body?.success === undefined &&
+      sameText(m16.body?.error, BD_CAIDA) &&
+      contratoNeedRef()?.supportersCount === intactCount &&
+      !authorInSupporters(),
+    `status=${m16.status} count=${contratoNeedRef()?.supportersCount} body=${JSON.stringify(m16.body)}`,
+  );
+
+  // --- BUG-03 · sin RPC (esquema antiguo): respaldo con conteo EXACTO ---
+  supabaseScenario = 'missing-rpc';
+  const m17 = await call(needsSupportHandler, {
+    method: 'POST',
+    path: `/needs/${contratoNeed}/support`,
+    headers: AUTH_AUTHOR,
+    body: { action: 'add' },
+    clientIp: IP_M,
+  });
+  check(
+    'M17 BUG-03 respaldo sin RPC → 200 con el conteo EXACTO (12 345 > 10 000, sin truncar)',
+    m17.status === 200 &&
+      m17.body?.success === true &&
+      m17.body?.count === EXACT_COUNT &&
+      m17.body?.supported === true,
+    `status=${m17.status} count=${m17.body?.count} (esperado ${EXACT_COUNT})`,
+  );
+
+  await contrato(
+    'M18 contrato: el respaldo con conteo exacto responde igual en ambos adaptadores',
+    {
+      method: 'POST',
+      path: `/api/needs/${contratoNeed}/support`,
+      vurl: `/api/needs-support?_orig=needs/${contratoNeed}/support&id=${contratoNeed}`,
+      headers: AUTH_AUTHOR,
+      body: { action: 'add' },
+    },
+    (r) =>
+      r.status === 200 && r.body?.count === EXACT_COUNT && r.body?.supported === true
+        ? true
+        : `count=${EXACT_COUNT} esperado, llegó ${r.status} ${JSON.stringify(r.body)}`,
+  );
+
+  expressServer.closeAllConnections?.();
+  expressServer.close();
+  expressServer = null;
 } catch (error) {
   failures += 1;
   console.log(`FALLO excepción  :: ${error?.stack ?? error}`);
 } finally {
+  try {
+    if (expressServer) {
+      expressServer.closeAllConnections?.();
+      await new Promise((resolve) => expressServer.close(resolve));
+    }
+  } catch { /* el cierre del servidor de la sección M es best-effort */ }
   try {
     if (rootEl) await act(async () => rootEl.unmount());
   } catch { /* el desmontaje es best-effort */ }

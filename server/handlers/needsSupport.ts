@@ -49,6 +49,11 @@ function resolveNeedId(input: ApiRequest): string {
  *    y el recuento lo escribe la BD en la misma transacción que modifica la
  *    tabla (RPC `toggle_need_support`). La caché **nunca** escribe
  *    `supporters_count`: era una escritura absoluta que perdía apoyos.
+ *  - **Con BD configurada, o se confirma la escritura o responde error**
+ *    (503 reintentable): nunca un `success: true` alimentado solo de la
+ *    caché, que en Vercel se pierde en el siguiente cold start (BUG-01).
+ *    El toggle en caché existe únicamente **sin cliente Supabase**
+ *    (modo sin BD, comportamiento documentado) y sigue siendo idempotente.
  */
 export const needsSupportHandler: ApiHandler = async (input, res) => {
   if (effectiveMethod(input.method) !== 'POST') return notFoundResult(input);
@@ -98,8 +103,6 @@ export const needsSupportHandler: ApiHandler = async (input, res) => {
   const supporters = getSupporterSet(target.id);
   const client = getSupabaseClient();
 
-  let handledInDb = false;
-
   if (client) {
     // 1) Camino normal: la RPC hace el INSERT/DELETE en `need_supporters`
     //    y recalcula `supporters_count` con `count(*)` en la misma
@@ -116,7 +119,6 @@ export const needsSupportHandler: ApiHandler = async (input, res) => {
     );
 
     if (!rpcError && typeof realCount === 'number') {
-      handledInDb = true;
       target.supportersCount = realCount;
       if (wantAdd) supporters.add(user.userId);
       else supporters.delete(user.userId);
@@ -144,45 +146,67 @@ export const needsSupportHandler: ApiHandler = async (input, res) => {
               .select('need_id'),
           ));
 
-      if (!write.error) {
-        const { data: rows, error: countError } = await withSupabaseRetry<{ need_id: string }[]>(
-          'Supabase recount need_supporters',
-          () =>
-            client.from('need_supporters').select('need_id').eq('need_id', target.id).limit(10_000),
-        );
-
-        if (countError || !Array.isArray(rows)) {
-          // El apoyo ya está escrito pero no podemos confirmar el
-          // recuento: se responde error en lugar de un éxito inventado.
-          respondWriteFailure(
-            res,
-            'el apoyo',
-            countError ?? { message: 'El recuento de apoyos no está disponible.' },
-          );
-          return null;
-        }
-
-        const recount = rows.length;
-        const { error: updateError } = await withSupabaseRetry('Supabase update supporters_count', () =>
-          client.from('help_needs').update({ supporters_count: recount }).eq('id', target.id),
-        );
-        if (updateError) {
-          respondWriteFailure(res, 'el contador de apoyos', updateError);
-          return null;
-        }
-
-        handledInDb = true;
-        target.supportersCount = recount;
-        if (wantAdd) supporters.add(user.userId);
-        else supporters.delete(user.userId);
+      if (write.error) {
+        // La BD está configurada y la escritura no se confirmó: error
+        // explícito (BUG-01), nunca un 200 con la caché.
+        respondWriteFailure(res, 'el apoyo', write.error);
+        return null;
       }
-    }
-  }
 
-  if (!handledInDb) {
-    // Sin base de datos (o red caída): toggle local idempotente, el mismo
-    // comportamiento que con la tabla disponible. Último recurso: aquí el
-    // contador es el de la caché porque no existe otra fuente.
+      // Recuento EXACTO vía PostgREST (`head` + `count=exact`): sin tope
+      // de filas, así el total no se trunca aunque `need_supporters`
+      // tenga más de 10 000 apoyos (BUG-03). Devuelve solo la cabecera
+      // `content-range`, no las filas.
+      const { error: countError, count } = await withSupabaseRetry<{ need_id: string }[]>(
+        'Supabase recount need_supporters',
+        () =>
+          client
+            .from('need_supporters')
+            .select('need_id', { count: 'exact', head: true })
+            .eq('need_id', target.id),
+      );
+
+      if (countError || typeof count !== 'number') {
+        // El apoyo ya está escrito pero no podemos confirmar el
+        // recuento: se responde error en lugar de un éxito inventado.
+        respondWriteFailure(
+          res,
+          'el apoyo',
+          countError ?? { message: 'El recuento de apoyos no está disponible.' },
+        );
+        return null;
+      }
+
+      const { error: updateError } = await withSupabaseRetry('Supabase update supporters_count', () =>
+        client.from('help_needs').update({ supporters_count: count }).eq('id', target.id),
+      );
+      if (updateError) {
+        respondWriteFailure(res, 'el contador de apoyos', updateError);
+        return null;
+      }
+
+      target.supportersCount = count;
+      if (wantAdd) supporters.add(user.userId);
+      else supporters.delete(user.userId);
+    } else {
+      // 3) BUG-01: la BD está configurada pero NADA se confirmó (RPC
+      //    transitoria agotada, o respuesta sin recuento numérico). En
+      //    Vercel la caché no es persistencia: responder `success: true`
+      //    aquí daría un apoyo por bueno que un cold start borra. Se
+      //    responde 503 explícito SIN tocar la caché ni el set de
+      //    supporters: el cliente ya revierte su actualización
+      //    optimista al recibir error (`AppContext.supportNeed`).
+      respondWriteFailure(
+        res,
+        'el apoyo',
+        rpcError ?? { message: 'La función toggle_need_support no devolvió un recuento válido.' },
+      );
+      return null;
+    }
+  } else {
+    // Sin cliente Supabase (modo sin BD): toggle local idempotente, el
+    // mismo comportamiento que con la tabla disponible. Último recurso:
+    // aquí el contador es el de la caché porque no existe otra fuente.
     if (wantAdd && !supporters.has(user.userId)) {
       supporters.add(user.userId);
       target.supportersCount += 1;

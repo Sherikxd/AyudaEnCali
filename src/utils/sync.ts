@@ -9,6 +9,8 @@
 interface Syncable {
   id: string;
   pending?: boolean;
+  /** Rechazo permanente del servidor (BUG-02): pendiente pero ya no auto-reintentable. */
+  syncFailed?: boolean;
 }
 
 /**
@@ -42,9 +44,22 @@ export function mergeById<T extends Syncable>(
   return [...pendingFirst, ...remote, ...restLocal];
 }
 
-/** ¿Quedan elementos locales sin confirmar por el servidor? */
+/**
+ * ¿Quedan elementos locales sin confirmar por el servidor?
+ *
+ * Los rechazados de forma permanente (`syncFailed`, BUG-02) **no** cuentan:
+ * ellos ya no se reenvían solos y se avisan aparte con acciones (reintentar /
+ * descartar). Ver `countFailed`.
+ */
 export function countPending<T extends Syncable>(items: readonly T[]): number {
   let total = 0;
-  for (const item of items) if (item.pending === true) total += 1;
+  for (const item of items) if (item.pending === true && item.syncFailed !== true) total += 1;
+  return total;
+}
+
+/** ¿Cuántos elementos locales fueron rechazados por el servidor (BUG-02)? */
+export function countFailed<T extends Syncable>(items: readonly T[]): number {
+  let total = 0;
+  for (const item of items) if (item.syncFailed === true) total += 1;
   return total;
 }

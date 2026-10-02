@@ -21,7 +21,8 @@
     "cdn:upload": "tsx scripts/upload-cloudinary.ts",
     "verify:rls": "bash scripts/verify-rls.sh",
     "db:setup": "tsx scripts/apply-schema.ts",
-    "db:seed": "tsx scripts/seed-db.ts"
+    "db:seed": "tsx scripts/seed-db.ts",
+    "export:s3": "node --import tsx scripts/export-s3.ts"
   },
   "dependencies": {
     "@clerk/backend": "^3.20.1",

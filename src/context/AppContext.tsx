@@ -17,6 +17,7 @@ import {
   PointsResponse,
   SupportAction,
   SupportResponse,
+  ToastAction,
   ToastItem,
   ToastKind,
   UserRole,
@@ -33,8 +34,9 @@ import { CALI_BARRIOS_DATA, getFriendlyLocationName } from '../data/caliLocation
 import { apiFetch, ApiError } from '../services/api';
 import { applyConsent, readConsent, saveConsent, type CookieConsent } from '../utils/consent';
 import { loadJSON, saveJSON } from '../utils/storage';
-import { countPending, mergeById } from '../utils/sync';
+import { countFailed, countPending, mergeById } from '../utils/sync';
 import { newId } from '../utils/id';
+import { barrioLabel, formatKm, needDistanceKm, sameBarrio } from '../utils/proximity';
 import { logger } from '../utils/logger';
 
 export interface ServerStatus {
@@ -85,10 +87,20 @@ interface AppContextType {
   completeAuthModal: () => void;
   /** Avisos efímeros visibles (éxito, error, aviso). */
   toasts: ToastItem[];
-  /** Muestra un aviso; se cierra solo tras unos segundos. */
-  notify: (message: string, kind?: ToastKind) => void;
+  /**
+   * Muestra un aviso; se cierra solo tras unos segundos, salvo que lleve
+   * `actions` (entonces exige decisión). Devuelve su `id` para poder
+   * cerrarlo o reemplazarlo desde una acción.
+   */
+  notify: (message: string, kind?: ToastKind, actions?: ToastAction[]) => number;
   /** Cierra un aviso concreto (botón «Cerrar aviso»). */
   dismissToast: (id: number) => void;
+  /**
+   * Alertas locales por barrio (MEJ-03): suscripción **optativa** a avisos
+   * de nuevas necesidades cerca del usuario. Persistida en el dispositivo.
+   */
+  needAlertsEnabled: boolean;
+  setNeedAlertsEnabled: (enabled: boolean) => void;
   /** Preguntas frecuentes: `section` despliega esa entrada concreta. */
   isFaqOpen: boolean;
   faqSection: string | null;
@@ -176,6 +188,8 @@ const STORAGE_KEYS = {
   COMMENTS: 'ayudaencali_comments_v3',
   PROFILE: 'ayudaencali_profile_v3',
   LOCATION: 'ayudaencali_location_v2',
+  /** Suscripción a alertas de nuevas necesidades cerca del usuario (MEJ-03). */
+  NEED_ALERTS: 'ayudaencali_need_alerts_v1',
 };
 
 /**
@@ -204,6 +218,14 @@ const IDENTITY_PROMPT_COOLDOWN_MS = 5_000;
 /** Mensaje por defecto cuando una escritura se queda sin identidad de Clerk. */
 const IDENTITY_MESSAGE =
   'Para continuar necesitas entrar con tu cuenta de AyudaEnCali: así evitamos reportes falsos.';
+/**
+ * Cadencia del sondeo de nuevas necesidades (MEJ-03). Solo con la
+ * suscripción activa y usando el **mismo** `GET /api/needs` del sync: sin
+ * coordenadas en la petición, sin funciones nuevas ni dependencias.
+ */
+const NEED_ALERT_POLL_MS = 75_000;
+/** Máximo de novedades que se detallan en un aviso de cercanía (MEJ-03). */
+const MAX_ALERTED_NEEDS = 3;
 
 /**
  * Campos de identidad que el cliente ya **no** envía en los cuerros de
@@ -226,6 +248,23 @@ const isUnauthorized = (error: unknown): error is ApiError =>
 /** El servidor ni siquiera respondió: red caída o timeout. */
 const isServerUnreachable = (error: unknown): error is ApiError =>
   error instanceof ApiError && error.status === 0;
+
+/**
+ * Rechazo **permanente** (BUG-02): un 4xx que volver a enviar no va a
+ * arreglar. Se separa del transitorio (red, 5xx, 429 y los 401/408 que ya
+ * tienen su propio flujo) para poder pasar el ítem a estado `failed` y
+ * ofrecer acciones en lugar de reintentarlo 3 veces en vano.
+ */
+const isPermanentRejection = (error: unknown): error is ApiError =>
+  error instanceof ApiError &&
+  error.status >= 400 &&
+  error.status < 500 &&
+  error.status !== 401 &&
+  error.status !== 408 &&
+  error.status !== 429;
+
+/** A qué lista local pertenece un elemento encolado (BUG-02). */
+type SyncKind = 'point' | 'need' | 'comment';
 
 /** Texto amable para «N publicaciones pendientes». */
 const pendingLabel = (total: number): string =>
@@ -309,23 +348,43 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   const [toasts, setToasts] = useState<ToastItem[]>([]);
   const toastSeqRef = useRef(0);
 
-  const notify = useCallback((message: string, kind: ToastKind = 'info') => {
-    toastSeqRef.current += 1;
-    const id = toastSeqRef.current;
-    setToasts((prev) =>
-      // Sin duplicados: los reintentos suelen repetir el mismo mensaje.
-      [...prev.filter((toast) => toast.message !== message), { id, kind, message }].slice(-MAX_TOASTS),
-    );
-  }, []);
+  /**
+   * Aviso visible. `actions` añade botones (BUG-02): en ese caso el aviso
+   * **no** se cierra solo, porque exige una decisión (reintentar / descartar)
+   * y cerrarlo en silencio dejaría datos sin resolver.
+   */
+  const notify = useCallback(
+    (message: string, kind: ToastKind = 'info', actions?: ToastAction[]): number => {
+      toastSeqRef.current += 1;
+      const id = toastSeqRef.current;
+      setToasts((prev) =>
+        // Sin duplicados: los reintentos suelen repetir el mismo mensaje.
+        [
+          ...prev.filter((toast) => toast.message !== message),
+          actions && actions.length > 0 ? { id, kind, message, actions } : { id, kind, message },
+        ].slice(-MAX_TOASTS),
+      );
+      return id;
+    },
+    [],
+  );
 
   const dismissToast = useCallback((id: number) => {
     setToasts((prev) => prev.filter((toast) => toast.id !== id));
   }, []);
 
-  // Auto-cierre: retira el aviso más antiguo cuando lleva su tiempo.
+  // Auto-cierre: retira el aviso más antiguo que no requiera decisión
+  // (los avisos con `actions` se quedan hasta que se actúe sobre ellos).
   useEffect(() => {
-    if (toasts.length === 0) return undefined;
-    const timer = window.setTimeout(() => setToasts((prev) => prev.slice(1)), TOAST_DURATION_MS);
+    const needsDecision = (toast: ToastItem): boolean =>
+      toast.actions !== undefined && toast.actions.length > 0;
+    if (toasts.every(needsDecision)) return undefined;
+    const timer = window.setTimeout(() => {
+      setToasts((prev) => {
+        const index = prev.findIndex((toast) => !needsDecision(toast));
+        return index === -1 ? prev : [...prev.slice(0, index), ...prev.slice(index + 1)];
+      });
+    }, TOAST_DURATION_MS);
     return () => window.clearTimeout(timer);
   }, [toasts]);
 
@@ -364,6 +423,19 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   // `null` → la persona aún no respondió el banner de cookies.
   const [cookieConsent, setCookieConsentState] = useState<CookieConsent | null>(() => readConsent());
 
+  /**
+   * Alertas locales por barrio (MEJ-03): suscripción **optativa** y
+   * persistida en el dispositivo. Por defecto apagada: nadie recibe avisos
+   * sin haberlos pedido.
+   */
+  const [needAlertsEnabled, setNeedAlertsEnabledState] = useState<boolean>(
+    () => loadJSON<boolean>(STORAGE_KEYS.NEED_ALERTS, false) === true,
+  );
+  const setNeedAlertsEnabled = useCallback((enabled: boolean) => {
+    saveJSON(STORAGE_KEYS.NEED_ALERTS, enabled);
+    setNeedAlertsEnabledState(enabled);
+  }, []);
+
   // Estado inicial desconocido: se completa con GET /api/config al montar.
   const [serverStatus, setServerStatus] = useState<ServerStatus>({
     supabaseConnected: false,
@@ -384,6 +456,16 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   const serverReachableRef = useRef(true);
   /** Nº de elementos locales aún sin confirmar (para saber si hay que reintentar). */
   const pendingCountRef = useRef(0);
+
+  /**
+   * Espejo de las tres listas locales (BUG-02): las acciones que se guardan
+   * dentro de un aviso (`ToastAction`) se crean en el render en que se
+   * muestra y se ejecutan más tarde; leen este ref para trabajar siempre con
+   * el estado vigente y no con una copia congelada. Mismo patrón que
+   * `identityRef` / `serverReachableRef`.
+   */
+  const listsRef = useRef({ points: helpPoints, needs: helpNeeds, comments: pointComments });
+  listsRef.current = { points: helpPoints, needs: helpNeeds, comments: pointComments };
 
   const [userLocation, setUserLocation] = useState<UserCoordinates | null>(() => {
     const saved = loadJSON<UserCoordinates | null>(STORAGE_KEYS.LOCATION, null);
@@ -528,14 +610,135 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     promptForIdentity(IDENTITY_MESSAGE);
   };
 
+  /* ------------------------------------------------------------------ *
+   * Rechazos permanentes (BUG-02): el ítem pasa a `failed` conservando
+   * su payload; a partir de ahí solo se mueve con una acción explícita
+   * (reintentar / descartar) desde el aviso visible.
+   * ------------------------------------------------------------------ */
+
+  /** Marca un elemento concreto de una lista como rechazado, sin tocar su payload. */
+  const markItemFailed = <T extends { id: string; syncFailed?: boolean; syncError?: string }>(
+    setList: React.Dispatch<React.SetStateAction<T[]>>,
+    id: string,
+    reason: string,
+  ): void => {
+    setList((prev) =>
+      prev.map((item) => (item.id === id ? { ...item, syncFailed: true, syncError: reason } : item)),
+    );
+  };
+
+  /** `markItemFailed` resolviendo a qué lista pertenece el id. */
+  const markFailed = (kind: SyncKind, id: string, reason: string): void => {
+    if (kind === 'point') markItemFailed<HelpPoint>(setHelpPoints, id, reason);
+    else if (kind === 'need') markItemFailed<HelpNeed>(setHelpNeeds, id, reason);
+    else markItemFailed<PointComment>(setPointComments, id, reason);
+  };
+
+  /** Quita la marca de rechazo y reinicia sus reenvíos (bug: 3 intentos/session). */
+  const clearFailedFlags = (ids: ReadonlySet<string>): void => {
+    for (const id of ids) {
+      syncAttemptsRef.current.delete(id);
+      inflightIdsRef.current.delete(id);
+    }
+    const strip = <T extends { id: string; syncFailed?: boolean; syncError?: string }>(
+      prev: readonly T[],
+    ): T[] =>
+      prev.map((item) =>
+        ids.has(item.id)
+          ? { ...item, syncFailed: undefined, syncError: undefined }
+          : item,
+      );
+    setHelpPoints((prev) => strip(prev));
+    setHelpNeeds((prev) => strip(prev));
+    setPointComments((prev) => strip(prev));
+  };
+
+  /** Ids rechazados ahora mismo (lee el espejo de listas: estado vigente). */
+  const currentFailedIds = (): string[] => {
+    const { points, needs, comments } = listsRef.current;
+    return [...points, ...needs, ...comments]
+      .filter((item) => item.syncFailed === true)
+      .map((item) => item.id);
+  };
+
+  /**
+   * Reintenta a mano todos los rechazados: limpia marcas y contadores de
+   * intentos para que el reenvío automático vuelva a cogerlos. Si no hay
+   * sesión de Clerk se abre el flujo de identidad existente (`ensureIdentity`
+   * solo encola escrituras puntuales; aquí basta con entrar: el reenvío
+   * automático se dispara solo al llegar la sesión).
+   */
+  const retryFailedWrites = (): void => {
+    const ids = currentFailedIds();
+    if (ids.length === 0) return;
+    clearFailedFlags(new Set(ids));
+
+    const current = identityRef.current;
+    if (current.isSignedIn && current.clerkUserId) return;
+    lastIdentityPromptRef.current = Date.now();
+    if (!current.isRegistered) {
+      openAuthModal('Vuelve a entrar con tu cuenta para reintentar tus publicaciones rechazadas.');
+    } else {
+      openSignIn();
+    }
+  };
+
+  /**
+   * Descarta a mano lo rechazado **con confirmación previa** (el aviso de
+   * dos pasos lo monta quien lo llama): se borra del dispositivo, nunca en
+   * silencio. En un punto se retiran también sus comentarios locales
+   * pendientes (no podrían sincronizarse sin el punto).
+   */
+  const discardFailedWrites = (): void => {
+    const ids = currentFailedIds();
+    if (ids.length === 0) return;
+    const idSet = new Set(ids);
+
+    const removedPointIds = listsRef.current.points
+      .filter((point) => idSet.has(point.id))
+      .map((point) => point.id);
+
+    clearFailedFlags(idSet);
+    setHelpPoints((prev) => prev.filter((item) => !idSet.has(item.id)));
+    setHelpNeeds((prev) => prev.filter((item) => !idSet.has(item.id)));
+    setPointComments(
+      (prev) =>
+        prev.filter(
+          (comment) =>
+            !idSet.has(comment.id) &&
+            !removedPointIds.includes(comment.pointId),
+        ),
+    );
+    setUserProfile((prev) => ({
+      ...prev,
+      reportedPointIds: prev.reportedPointIds.filter((id) => !idSet.has(id)),
+      savedPointIds: prev.savedPointIds.filter((id) => !idSet.has(id)),
+    }));
+    setSelectedPoint((prev) => (prev && idSet.has(prev.id) ? null : prev));
+    setSelectedNeed((prev) => (prev && idSet.has(prev.id) ? null : prev));
+    notify(
+      ids.length === 1
+        ? 'Publicación descartada de este dispositivo.'
+        : `${ids.length} publicaciones descartadas de este dispositivo.`,
+      'info',
+    );
+  };
+
   /** El servidor rechazó o no contestó al publicar: el ítem queda local. */
-  const handlePublishError = (error: unknown, what: string) => {
+  const handlePublishError = (error: unknown, what: string, failed?: { kind: SyncKind; id: string }) => {
     if (isUnauthorized(error)) {
       handleUnauthorized(`Tu sesión caducó: vuelve a entrar para completar ${what}.`);
       return;
     }
     if (isServerUnreachable(error)) setReachable(false);
     logger.warn(`No se pudo publicar ${what}:`, error);
+    // Rechazo permanente (BUG-02): no prometemos «se reintentará» si el
+    // servidor ya dijo que no. El ítem queda en `failed` y el aviso
+    // accionable (reintentar / descartar) lo saca el efecto de rechazados.
+    if (failed && isPermanentRejection(error)) {
+      markFailed(failed.kind, failed.id, error.message);
+      return;
+    }
     notify(
       `No pudimos publicar ${what} en el servidor. Queda guardado en tu dispositivo y se reintentará en cuanto vuelva la conexión.`,
       'error',
@@ -775,10 +978,125 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     };
   }, []);
 
+  /* ------------------------------------------------------------------ *
+   * Alertas locales por barrio (MEJ-03): suscripción **optativa** que
+   * sondea el `GET /api/needs` existente cada `NEED_ALERT_POLL_MS` y avisa
+   * con un `Toast` (región `aria-live`) de las necesidades NUEVAS del
+   * barrio del usuario —o de las más cercanas si hay ubicación—.
+   *
+   * - La petición es un GET simple: **no** se envía ninguna coordenada a
+   *   ningún sitio; el filtrado por barrio/distancia ocurre en este
+   *   dispositivo sobre el centroide (`src/utils/proximity.ts`).
+   * - Deduplicación por ID (`alertedNeedIdsRef` + los ya conocidos): cada
+   *   necesidad se anuncia como mucho una vez.
+   * - Con la pestaña oculta no se sondea (no hay nadie que ver el aviso).
+   * ------------------------------------------------------------------ */
+  const alertedNeedIdsRef = useRef<Set<string>>(new Set());
+  const alertBarrio = userLocation?.barrio || userProfile.barrio;
+
+  useEffect(() => {
+    if (!needAlertsEnabled) return undefined;
+    let cancelled = false;
+
+    /** Novedades que merecen aviso: primero mi barrio; si no, las más cercanas. */
+    const pickAlertworthy = (
+      fresh: readonly HelpNeed[],
+    ): { list: HelpNeed[]; mode: 'barrio' | 'cercana' | 'tablon'; km: number | null } => {
+      const inMyBarrio = fresh.filter((need) => sameBarrio(need.barrio, alertBarrio));
+      if (inMyBarrio.length > 0) {
+        return { list: inMyBarrio.slice(0, MAX_ALERTED_NEEDS), mode: 'barrio', km: null };
+      }
+      if (userLocation) {
+        const ranked: { need: HelpNeed; index: number; km: number }[] = [];
+        fresh.forEach((need, index) => {
+          const km = needDistanceKm(userLocation, need);
+          if (km !== null) ranked.push({ need, index, km });
+        });
+        ranked.sort((a, b) => (a.km === b.km ? a.index - b.index : a.km - b.km));
+        if (ranked.length > 0) {
+          return {
+            list: ranked.slice(0, MAX_ALERTED_NEEDS).map((entry) => entry.need),
+            mode: 'cercana',
+            km: ranked[0].km,
+          };
+        }
+      }
+      return { list: fresh.slice(0, MAX_ALERTED_NEEDS), mode: 'tablon', km: null };
+    };
+
+    const buildMessage = (
+      fresh: readonly HelpNeed[],
+      picked: ReturnType<typeof pickAlertworthy>,
+    ): string => {
+      const shown = picked.list
+        .map((need) => `«${need.title}»`)
+        .join(' y ');
+      const more = fresh.length > picked.list.length ? ` (y ${fresh.length - picked.list.length} más)` : '';
+      if (picked.mode === 'barrio') {
+        const label = barrioLabel(alertBarrio);
+        const where = label !== '' ? ` en tu barrio (${label})` : '';
+        return fresh.length === 1
+          ? `Nueva necesidad${where}: ${shown}. Ábrela en el tablón para apoyarla.`
+          : `${fresh.length} nuevas necesidades${where}: ${shown}${more}.`;
+      }
+      if (picked.mode === 'cercana' && picked.km !== null) {
+        return fresh.length === 1
+          ? `Nueva necesidad cerca de ti (≈${formatKm(picked.km)}, aproximado): ${shown}.`
+          : `${fresh.length} nuevas necesidades cerca de ti (distancia aproximada): ${shown}${more}.`;
+      }
+      return fresh.length === 1
+        ? `Nueva necesidad en el tablón: ${shown}.`
+        : `${fresh.length} nuevas necesidades en el tablón: ${shown}${more}.`;
+    };
+
+    const scan = async (announce: boolean): Promise<void> => {
+      // Con la pestaña oculta no se sondea; la línea base (sin anuncio) sí.
+      if (announce && typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+      try {
+        const data = await apiFetch<NeedsResponse>('/api/needs');
+        if (cancelled) return;
+        const remote = Array.isArray(data.needs) ? data.needs : [];
+        if (remote.length === 0) return;
+
+        const known = new Set(listsRef.current.needs.map((need) => need.id));
+        const fresh = remote.filter(
+          (need) => !known.has(need.id) && !alertedNeedIdsRef.current.has(need.id),
+        );
+        // Misma fusión que el sync: la novedad se ve en el tablón en el
+        // momento en que el aviso la anuncia.
+        setHelpNeeds((prev) => mergeById(prev, remote, SEED_IDS.NEEDS));
+        if (fresh.length === 0) return;
+        for (const need of fresh) alertedNeedIdsRef.current.add(need.id);
+        if (!announce) return; // línea base al activar: no avisa de lo ya existente
+
+        const picked = pickAlertworthy(fresh);
+        if (picked.list.length === 0) return;
+        notify(buildMessage(fresh, picked), 'info');
+      } catch (error) {
+        if (!cancelled) logger.debug('No se pudieron revisar nuevas necesidades:', error);
+      }
+    };
+
+    // Línea base al activar (nada de avisos por lo que ya existía) + sondeo.
+    void scan(false);
+    const timer = window.setInterval(() => {
+      void scan(true);
+    }, NEED_ALERT_POLL_MS);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [needAlertsEnabled, alertBarrio, userLocation, notify]);
+
   // Locales aún sin confirmar por el servidor (T6): alimenta el contador que
-  // decide cuándo reintentar el sync y avisa a la persona usuaria.
+  // decide cuándo reintentar el sync y avisa a la persona usuaria. Los
+  // rechazados de forma permanente (`syncFailed`, BUG-02) **no** cuentan aquí:
+  // ya no se reenvían solos y se avisan aparte, con acciones.
   const pendingCount =
     countPending(helpPoints) + countPending(helpNeeds) + countPending(pointComments);
+  const failedCount =
+    countFailed(helpPoints) + countFailed(helpNeeds) + countFailed(pointComments);
 
   useEffect(() => {
     pendingCountRef.current = pendingCount;
@@ -793,7 +1111,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       if (hadPendingRef.current) {
         hadPendingRef.current = false;
         pendingWarnedRef.current = false;
-        notify('Ya está todo sincronizado con el servidor.', 'success');
+        // No puede decir «todo sincronizado» si queda algo rechazado (BUG-02).
+        if (failedCount === 0) notify('Ya está todo sincronizado con el servidor.', 'success');
       }
       return;
     }
@@ -804,7 +1123,86 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       `${pendingLabel(pendingCount)}: se guardaron en tu dispositivo y se reintentará la sincronización.`,
       'warning',
     );
-  }, [pendingCount, notify]);
+  }, [pendingCount, failedCount, notify]);
+
+  /* ------------------------------------------------------------------ *
+   * Aviso ACCIONABLE de rechazados (BUG-02): mientras haya `failed` se
+   * mantiene en pantalla un aviso (región `aria-live`) con «Reintentar» y
+   * «Descartar»; descartar pide confirmación en un segundo aviso. No se
+   * cierra solo: cerrarlo en silencio dejaría datos sin resolver.
+   * ------------------------------------------------------------------ */
+  const failedToastIdRef = useRef<number | null>(null);
+  // Segundo paso de «Descartar»: conmuta el aviso a su pregunta de confirmación.
+  const [confirmingDiscard, setConfirmingDiscard] = useState(false);
+
+  useEffect(() => {
+    // Retira el aviso anterior antes de pintar el nuevo (siempre el vigente).
+    if (failedToastIdRef.current !== null) {
+      dismissToast(failedToastIdRef.current);
+      failedToastIdRef.current = null;
+    }
+
+    if (failedCount === 0) {
+      if (confirmingDiscard) setConfirmingDiscard(false);
+      return;
+    }
+
+    const rejected = [...listsRef.current.points, ...listsRef.current.needs, ...listsRef.current.comments].filter(
+      (item) => item.syncFailed === true,
+    );
+
+    if (confirmingDiscard) {
+      failedToastIdRef.current = notify(
+        rejected.length === 1
+          ? '¿Descartar la publicación rechazada? Se borrará de este dispositivo y no se puede deshacer.'
+          : `¿Descartar las ${rejected.length} publicaciones rechazadas? Se borrarán de este dispositivo y no se puede deshacer.`,
+        'warning',
+        [
+          {
+            id: 'discard-yes',
+            label: 'Sí, descartar',
+            variant: 'danger',
+            run: (toastId) => {
+              dismissToast(toastId);
+              failedToastIdRef.current = null;
+              discardFailedWrites();
+            },
+          },
+          {
+            id: 'discard-no',
+            label: 'Cancelar',
+            run: () => setConfirmingDiscard(false),
+          },
+        ],
+      );
+      return;
+    }
+
+    const reason = rejected[0]?.syncError?.trim();
+    failedToastIdRef.current = notify(
+      rejected.length === 1
+        ? `El servidor rechazó una publicación${reason ? `: «${reason}»` : ''}. Puedes reintentarla o descartarla.`
+        : `El servidor rechazó ${rejected.length} publicaciones. Puedes reintentarlas o descartarlas.`,
+      'error',
+      [
+        {
+          id: 'retry',
+          label: 'Reintentar',
+          run: (toastId) => {
+            dismissToast(toastId);
+            failedToastIdRef.current = null;
+            retryFailedWrites();
+          },
+        },
+        {
+          id: 'discard',
+          label: 'Descartar',
+          variant: 'danger',
+          run: () => setConfirmingDiscard(true),
+        },
+      ],
+    );
+  }, [failedCount, confirmingDiscard, notify, dismissToast]);
 
   /**
    * El servidor confirmó un elemento local: se adopta su versión (que puede
@@ -814,7 +1212,11 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
    */
   const confirmPoint = (localId: string, confirmed?: HelpPoint) => {
     setHelpPoints((prev) =>
-      prev.map((item) => (item.id === localId ? { ...(confirmed ?? item), pending: false } : item)),
+      prev.map((item) =>
+        item.id === localId
+          ? { ...(confirmed ?? item), pending: false, syncFailed: undefined, syncError: undefined }
+          : item,
+      ),
     );
     if (!confirmed || confirmed.id === localId) return;
     setSelectedPoint((prev) => (prev && prev.id === localId ? confirmed : prev));
@@ -827,7 +1229,11 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
   const confirmNeed = (localId: string, confirmed?: HelpNeed) => {
     setHelpNeeds((prev) =>
-      prev.map((item) => (item.id === localId ? { ...(confirmed ?? item), pending: false } : item)),
+      prev.map((item) =>
+        item.id === localId
+          ? { ...(confirmed ?? item), pending: false, syncFailed: undefined, syncError: undefined }
+          : item,
+      ),
     );
     if (!confirmed || confirmed.id === localId) return;
     setSelectedNeed((prev) => (prev && prev.id === localId ? confirmed : prev));
@@ -835,7 +1241,11 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
   const confirmComment = (localId: string, confirmed?: PointComment) => {
     setPointComments((prev) =>
-      prev.map((item) => (item.id === localId ? { ...(confirmed ?? item), pending: false } : item)),
+      prev.map((item) =>
+        item.id === localId
+          ? { ...(confirmed ?? item), pending: false, syncFailed: undefined, syncError: undefined }
+          : item,
+      ),
     );
   };
 
@@ -848,6 +1258,11 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
    *
    * Los identificadores en vuelo (`inflightIdsRef`) quedan fuera: quien
    * acaba de publicar ya está esperando su respuesta.
+   *
+   * BUG-02: un fallo transitorio (red, 5xx, 429) sigue con estos 3
+   * intentos, pero un **4xx permanente** (salvo 401/408/429) pasa el ítem a
+   * `failed`: ya no se reintenta solo y espera la decisión de la persona
+   * (reintentar / descartar) en el aviso accionable.
    */
   useEffect(() => {
     if (!serverReachable || !isSignedIn || !clerkUserId) return;
@@ -866,13 +1281,16 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
      * petición concreta; si el servidor la confirma, el elemento se
      * reemplaza por la respuesta y deja de estar pendiente.
      */
-    const resendPending = async <T extends { id: string; pending?: boolean }>(
+    const resendPending = async <T extends { id: string; pending?: boolean; syncFailed?: boolean }>(
       items: readonly T[],
+      kind: SyncKind,
       unauthorizedMessage: string,
       send: (item: T) => Promise<void>,
     ): Promise<void> => {
       for (const item of items) {
         if (item.pending !== true) continue;
+        // Rechazo permanente (BUG-02): fuera del reenvío automático.
+        if (item.syncFailed === true) continue;
         if (cancelled || inflightIdsRef.current.has(item.id) || !takeAttempt(item.id)) continue;
 
         inflightIdsRef.current.add(item.id);
@@ -881,7 +1299,12 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         } catch (error) {
           if (cancelled) return;
           if (isUnauthorized(error)) {
+            // 401 → identidad caducada: mismo flujo de siempre
+            // (`handleUnauthorized` → `promptForIdentity` → `ensureIdentity`).
             handleUnauthorized(unauthorizedMessage);
+          } else if (isPermanentRejection(error)) {
+            markFailed(kind, item.id, error.message);
+            logger.warn(`Rechazo permanente de ${kind} ${item.id}:`, error);
           } else {
             if (isServerUnreachable(error)) setReachable(false);
             logger.warn('Reenvío de elemento pendiente fallido:', error);
@@ -899,6 +1322,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
       await resendPending(
         helpPoints,
+        'point',
         'Tu sesión caducó: vuelve a entrar para sincronizar tus reportes.',
         async (point) => {
           const data = await apiFetch<PointResponse>('/api/points', {
@@ -912,6 +1336,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
       await resendPending(
         helpNeeds,
+        'need',
         'Tu sesión caducó: vuelve a entrar para sincronizar tus necesidades.',
         async (need) => {
           const data = await apiFetch<NeedResponse>('/api/needs', {
@@ -925,6 +1350,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
       await resendPending(
         pointComments,
+        'comment',
         'Tu sesión caducó: vuelve a entrar para sincronizar tus comentarios.',
         async (comment) => {
           const data = await apiFetch<CommentResponse>('/api/comments', {
@@ -1128,7 +1554,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       confirmPoint(newPoint.id, data.point);
       notify('Punto publicado: ya aparece en el mapa para la comunidad de Cali.', 'success');
     } catch (error) {
-      handlePublishError(error, 'el punto');
+      handlePublishError(error, 'el punto', { kind: 'point', id: newPoint.id });
     } finally {
       inflightIdsRef.current.delete(newPoint.id);
     }
@@ -1178,7 +1604,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       confirmNeed(newNeed.id, data.need);
       notify('Necesidad publicada en el tablón comunitario.', 'success');
     } catch (error) {
-      handlePublishError(error, 'la necesidad');
+      handlePublishError(error, 'la necesidad', { kind: 'need', id: newNeed.id });
     } finally {
       inflightIdsRef.current.delete(newNeed.id);
     }
@@ -1237,7 +1663,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       confirmComment(newComment.id, data.comment);
       notify('Comentario publicado.', 'success');
     } catch (error) {
-      handlePublishError(error, 'el comentario');
+      handlePublishError(error, 'el comentario', { kind: 'comment', id: newComment.id });
     } finally {
       inflightIdsRef.current.delete(newComment.id);
     }
@@ -1691,6 +2117,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       toasts,
       notify,
       dismissToast,
+      needAlertsEnabled,
+      setNeedAlertsEnabled,
       isFaqOpen,
       faqSection,
       openFaq: openFaqStable,
@@ -1745,6 +2173,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       toasts,
       notify,
       dismissToast,
+      needAlertsEnabled,
+      setNeedAlertsEnabled,
       isFaqOpen,
       faqSection,
       openFaqStable,

@@ -30,11 +30,15 @@ docs/agentes/
     ├── 19-backend-p1.md         ← T1-T4: identidad, ciclo de vida, /sql, XFF
     ├── 20-frontend-rapidas.md   ← T9, T11(cliente), T13, T16 + index.html
     ├── 21-calidad-infra.md      ← T17 puerta de deploy, T18 CSP, T20 higiene
-    └── 22-copilot-profundo.md   ← agente pesado: rewrites T2, T5, T6, T8, T10, T12, T14
+    ├── 22-copilot-profundo.md   ← agente pesado: rewrites T2, T5, T6, T8, T10, T12, T14
+    ├── 24-backend-bugs-copilot.md ← ronda Copilot (T21-T23: BUG-01/03, MEJ-01)
+    └── 25-frontend-bugs-copilot.md ← ronda Copilot (T24-T26: BUG-02, MEJ-02/03)
 ```
 
-> Los números **09-13 no se usaron**: T11, T12 y T13 viven en los logs 06, 07
-> y 08. Cada agente escribe **solo** en su propio fichero de `memoria/`.
+> El **23 no se usó** (segunda pasada abortada, luego hecha por el plan
+> `plan-copilot-2026-10-01.md`) y los **09-13 tampoco**: T11, T12 y T13 de la
+> semana 1 viven en los logs 06, 07 y 08. Cada agente escribe **solo** en su
+> propio fichero de `memoria/`.
 
 ## Semana 1 — qué se hizo (estado 2026-09-30)
 

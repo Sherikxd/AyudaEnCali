@@ -46,7 +46,30 @@ export const Toast: React.FC<ToastProps> = ({ toast, onDismiss }) => (
     {/* El rol ya está en el contenedor: aquí solo se refuerza la etiqueta. */}
     <span className="sr-only">{KIND_LABEL[toast.kind]}: </span>
     {KIND_ICON[toast.kind]}
-    <p className="flex-1 pt-0.5">{toast.message}</p>
+    <div className="flex-1 min-w-0">
+      <p className="pt-0.5">{toast.message}</p>
+      {/* Acciones (BUG-02): reintentar/descartar lo rechazado. Con ellas el
+          aviso NO se cierra solo: exige una decisión, así no se pierden
+          datos en silencio. */}
+      {toast.actions && toast.actions.length > 0 && (
+        <div className="mt-2 flex flex-wrap items-center gap-1.5">
+          {toast.actions.map((action) => (
+            <button
+              key={action.id}
+              type="button"
+              onClick={() => action.run(toast.id)}
+              className={`px-2.5 py-1 rounded-lg text-[11px] font-bold border transition-colors focus:outline-none focus:ring-2 focus:ring-white/70 ${
+                action.variant === 'danger'
+                  ? 'bg-white/95 text-rose-700 border-white/70 hover:bg-rose-50'
+                  : 'bg-white/95 text-slate-800 border-white/70 hover:bg-white'
+              }`}
+            >
+              {action.label}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
     <button
       type="button"
       onClick={() => onDismiss(toast.id)}

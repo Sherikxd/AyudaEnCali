@@ -9,7 +9,6 @@ import { LocationModal } from './components/LocationModal';
 import { AuthModal } from './components/AuthModal';
 import { FaqPage } from './components/FaqPage';
 import { CookieConsent } from './components/CookieConsent';
-import { TabLink } from './components/TabLink';
 import { ToastRegion } from './components/Toast';
 import { FAQ_PAGE_META, PAGE_META, updatePageMeta } from './utils/seo';
 
@@ -79,73 +78,6 @@ const AppContent: React.FC = () => {
         </Suspense>
 
       </main>
-
-      {/* Navegación por texto en el pie; los hashes comparten estados de la
-          SPA, no páginas independientes. */}
-      <footer className="border-t border-slate-100 bg-white px-4 lg:px-8 py-6 pb-24 md:pb-8">
-        <div className="max-w-7xl mx-auto flex flex-col md:flex-row md:items-start md:justify-between gap-5 text-xs">
-          <div className="max-w-xl">
-            <p className="text-sm font-extrabold text-slate-900">
-              AyudaEn<span className="text-orange-600">Cali</span>
-            </p>
-            <p className="text-slate-500 leading-relaxed mt-1.5">
-              Plataforma comunitaria de emergencias de Santiago de Cali: mapa con centros de
-              acopio y albergues, tablón de necesidades y asistente de IA, mantenida entre
-              vecinos. No sustituye a los servicios oficiales: en una emergencia real llama al 123.
-            </p>
-          </div>
-          <nav aria-label="Enlaces de pie de página" className="flex flex-col gap-2 md:items-end">
-            <TabLink
-              tab="map"
-              className="font-semibold text-slate-600 hover:text-orange-600 transition-colors"
-            >
-              Mapa de recursos
-            </TabLink>
-            <TabLink
-              tab="blog"
-              className="font-semibold text-slate-600 hover:text-orange-600 transition-colors"
-            >
-              Tablón de necesidades
-            </TabLink>
-            <TabLink
-              tab="chat"
-              className="font-semibold text-slate-600 hover:text-orange-600 transition-colors"
-            >
-              Asistente IA
-            </TabLink>
-            <TabLink
-              tab="profile"
-              className="font-semibold text-slate-600 hover:text-orange-600 transition-colors"
-            >
-              Mi perfil
-            </TabLink>
-            <a
-              href="/preguntas-frecuentes/"
-              className="font-semibold text-slate-600 hover:text-orange-600 transition-colors"
-            >
-              Preguntas frecuentes
-            </a>
-            <a
-              href="tel:123"
-              className="font-semibold text-rose-700 hover:text-rose-800 transition-colors"
-            >
-              Línea de emergencias 123
-            </a>
-            <a
-              href="https://www.cali.gov.co/"
-              className="font-semibold text-slate-600 hover:text-orange-600 transition-colors"
-            >
-              Alcaldía de Cali (sitio oficial)
-            </a>
-            <a
-              href="https://www.cali.gov.co/gestiondelriesgo/"
-              className="font-semibold text-slate-600 hover:text-orange-600 transition-colors"
-            >
-              Gestión del Riesgo — Alcaldía de Cali
-            </a>
-          </nav>
-        </div>
-      </footer>
 
       <BottomNav />
       <ReportModal />

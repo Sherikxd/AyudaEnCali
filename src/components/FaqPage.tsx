@@ -125,6 +125,17 @@ export const FaqPage: React.FC = () => {
           <a href="tel:123" className="font-bold text-rose-700 hover:underline">
             Emergencias 123
           </a>
+          <span className="px-2" aria-hidden="true">·</span>
+          <a href="https://www.cali.gov.co/" className="font-bold text-orange-700 hover:underline">
+            Alcaldía de Cali (sitio oficial)
+          </a>
+          <span className="px-2" aria-hidden="true">·</span>
+          <a
+            href="https://www.cali.gov.co/gestiondelriesgo/"
+            className="font-bold text-orange-700 hover:underline"
+          >
+            Gestión del Riesgo — Alcaldía de Cali
+          </a>
         </footer>
       </div>
     </div>

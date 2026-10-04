@@ -693,12 +693,9 @@ export const MapView: React.FC = () => {
         onTouchStart={(e) => e.stopPropagation()}
       >
         {/* Título de la vista (H1): la pestaña por defecto necesita encabezado
-            propio con la keyword principal (SEO-07 · QW-02). */}
-        <div className="bg-white/95 backdrop-blur-md rounded-2xl shadow-lg shadow-slate-900/5 border border-slate-100 px-4 py-2.5">
-          <h1 className="text-sm font-extrabold text-slate-900 leading-tight">
-            Centros de acopio y albergues en Cali
-          </h1>
-        </div>
+            propio con la keyword principal (SEO-07 · QW-02), pero no se muestra
+            sobre la barra de búsqueda: queda oculto visualmente. */}
+        <h1 className="sr-only">Centros de acopio y albergues en Cali</h1>
 
         {/* Top Search Bar & Mobile Action Buttons Row */}
         <div className="flex items-center gap-2 w-full">

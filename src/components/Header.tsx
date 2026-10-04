@@ -117,12 +117,13 @@ export const Header: React.FC = () => {
 
         {/* Zone 3: 1-2 primary actions */}
         <div className="flex items-center gap-2.5">
-          {/* Ayuda: preguntas frecuentes (visible también en móvil) */}
+          {/* Ayuda: preguntas frecuentes (en móvil se llega desde Mi perfil;
+              el slot del header queda para el 123, que no puede esconderse) */}
           <a
             href="/preguntas-frecuentes/"
             aria-label="Preguntas frecuentes"
             title="Preguntas frecuentes"
-            className="w-9 h-9 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-600 hover:text-slate-900 flex items-center justify-center transition-colors shrink-0 focus:outline-none focus:ring-2 focus:ring-orange-500/30"
+            className="hidden sm:flex w-9 h-9 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-600 hover:text-slate-900 items-center justify-center transition-colors shrink-0 focus:outline-none focus:ring-2 focus:ring-orange-500/30"
           >
             <HelpCircle className="w-4 h-4" />
           </a>
@@ -130,10 +131,11 @@ export const Header: React.FC = () => {
           <a
             href="tel:123"
             title="Línea de Emergencia 123"
-            className="hidden sm:inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold text-rose-700 bg-rose-50 hover:bg-rose-100 rounded-xl transition-colors border border-rose-200/60"
+            aria-label="Línea de emergencias 123"
+            className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold text-rose-700 bg-rose-50 hover:bg-rose-100 rounded-xl transition-colors border border-rose-200/60"
           >
             <PhoneCall className="w-3.5 h-3.5 text-rose-600" />
-            <span>Línea 123</span>
+            <span className="hidden sm:inline">Línea 123</span>
           </a>
 
           <button

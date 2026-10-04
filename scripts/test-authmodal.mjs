@@ -288,9 +288,10 @@ try {
     'App.tsx actualiza metadatos de las vistas y de la página de FAQ',
     /updatePageMeta\(isFaqPage \? FAQ_PAGE_META : PAGE_META\[activeTab\]\)/.test(appSource),
   );
+  const headerSource = readFileSync(`${root}/src/components/Header.tsx`, 'utf8');
   check(
     'los enlaces de la app apuntan a la ruta independiente del FAQ',
-    /href="\/preguntas-frecuentes\/"/.test(appSource),
+    /href="\/preguntas-frecuentes\/"/.test(headerSource),
   );
 
   const mainSource = readFileSync(`${root}/src/main.tsx`, 'utf8');

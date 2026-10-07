@@ -65,6 +65,10 @@ puntos de salud, y para publicar lo que el barrio necesita.
 
 ## Arquitectura
 
+> **Diagrama y flujos completos** (componentes, tecnologías, lecturas,
+> escrituras, apoyos, chat y offline) en
+> [`docs/arquitectura.md`](docs/arquitectura.md), con 7 diagramas Mermaid.
+
 ```
 .
 ├── server.ts              # entrada local/Docker/Cloud Run: Vite (dev), estáticos,
@@ -117,6 +121,7 @@ puntos de salud, y para publicar lo que el barrio necesita.
 │   ├── data/               # datos iniciales y barrios de Cali
 │   ├── types/index.ts      # dominio + contrato de la API (compartido)
 │   └── utils/              # logger, storage, seo, consent (tipografías), sanitize, sync
+├── docs/arquitectura.md    # diagrama del sistema + flujos (Mermaid)
 ├── docs/agentes/           # memoria compartida: decisiones, auditorías, tareas
 ├── docs/legible/           # el proyecto explicado sin jerga
 ├── .github/agents/         # agentes de Copilot CLI (pensador, backend, frontend,

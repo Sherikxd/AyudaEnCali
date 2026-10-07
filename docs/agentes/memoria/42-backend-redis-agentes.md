@@ -70,6 +70,13 @@ Registrado como **FEAT-13** en `tareas-semana-2.md`.
   «cuatro niveles de almacenamiento», en rendimiento y en servicios.
 - `docs/legible/01-flujo-app.md` → fila de Redis en la cadena de resiliencia.
 - `docs/agentes/tareas-semana-2.md` → FEAT-13 ✅.
+- **`docs/arquitectura.md`** → documento nuevo con el diagrama del sistema y
+  los flujos: 7 diagramas Mermaid (componentes, Express vs Vercel, lectura,
+  escritura, apoyos, chat, offline), tabla de tecnologías, capas de caché,
+  seguridad, resiliencia, mapa del código y comandos. Enlazado desde
+  `README.md` (sección Arquitectura y árbol) y `docs/legible/README.md`;
+  los 7 parsean con la librería oficial de Mermaid y los enlaces internos
+  (7) apuntan a ficheros existentes.
 
 ## Verificación ejecutada
 

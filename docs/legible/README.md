@@ -9,6 +9,7 @@ vez) entienda cómo funciona.
 | [`01-flujo-app.md`](01-flujo-app.md) | **¿Qué ve y qué hace una persona al usar la app?** Pestañas, registro, reportes, chat y qué pasa si se cae internet o la base de datos. |
 | [`02-flujo-despliegue.md`](02-flujo-despliegue.md) | **¿Cómo pasa el código de mi ordenador a producción?** Desarrollo local, pruebas, integración continua y los tres caminos de despliegue. |
 | [`03-tecnologia-infraestructura.md`](03-tecnologia-infraestructura.md) | **¿Con qué está hecha y dónde vive?** Lenguajes, servicios externos (Supabase, Clerk, Gemini…), bases de datos, seguridad y rendimiento. |
+| [`../arquitectura.md`](../arquitectura.md) | **¿Cómo encaja todo y por dónde fluyen los datos?** Diagramas del sistema, capas de caché y los flujos de lectura, escritura, apoyo, chat y modo sin conexión. |
 
 ## Resumen en 30 segundos
 

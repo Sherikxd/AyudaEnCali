@@ -2,6 +2,7 @@ import type { ApiHandler, ApiRequest } from '../http.js';
 import { effectiveMethod, notFoundResult } from '../http.js';
 import { getAuthenticatedUser, respondUnauthorized } from '../auth.js';
 import { writeLimiter } from '../limiters.js';
+import { invalidate } from '../cache.js';
 import { getSupporterSet, memory, pushInCache } from '../store.js';
 import {
   classifySupabaseError,
@@ -62,7 +63,7 @@ export const needsSupportHandler: ApiHandler = async (input, res) => {
   // Sin id no hay ruta (equivale al 404 de Express para `/api/needs-support`).
   if (!id) return notFoundResult(input);
 
-  if (writeLimiter.enforce(input.clientIp, res)) return null;
+  if (await writeLimiter.enforce(input.clientIp, res)) return null;
 
   const user = await getAuthenticatedUser(input);
   if (!user) {
@@ -215,6 +216,14 @@ export const needsSupportHandler: ApiHandler = async (input, res) => {
       target.supportersCount = Math.max(0, target.supportersCount - 1);
     }
   }
+
+  // El recuento acaba de cambiar en la BD (o en el respaldo local): todo lo
+  // que hubiera cacheado el espacio `dir` queda obsoleto. Se borra ANTES de
+  // responder para que ninguna lectura posterior sirva un contador anterior
+  // al que se acaba de confirmar — así la decisión 2026-09-28 (el recuento
+  // lo escribe la BD y la caché nunca lo infiere) sobrevive a la caché de
+  // Redis: ésta solo refleja y se retira en el mismo request.
+  await invalidate('dir');
 
   const payload: SupportResponse = {
     success: true,

@@ -877,6 +877,39 @@ cubren también las rutas de ciclo de vida y moderación. Detalle en
 `memoria/34-api-v1.md`; verificación adicional HTTP y de compatibilidad en
 `memoria/38-api-v1-verificacion.md`.
 
+## FEAT-13 · Redis: caché de lecturas, límite de tasa y agentes — ✅ (2026-10-07)
+
+Integración con Redis gestionado (`REDIS_URL` en `.env`, nunca en el repo)
+para dos cosas que hoy se pagaban en cada petición y por proceso:
+
+- **Caché de lecturas** (`server/cache.ts` + `server/redis.ts`): listados de
+  puntos (30 s) y necesidades (10 s), ítems por id (60 s) y el contexto del
+  asistente (30 s) en `aec:dir:*`. Invalidación **sincrónica** por espacio en
+  cada escritura (`invalidate('dir')` en `points.ts`, `needs.ts` y
+  `needsSupport.ts`). Resuelve la tensión con la decisión 2026-09-28 sin
+  tocarla: ver entrada nueva en `decisiones.md`.
+- **Límite de tasa compartido** (`server/rateLimit.ts`): script
+  `INCR`+`PEXPIRE` en `aec:rl:<write|read|chat>:<ip>`; `enforce()` pasó a
+  `async` (12 call-sites). En Vercel deja de multiplicarse por función. Con
+  Redis caído vuelve al `Map` local: mismo comportamiento que antes.
+- **Sin requisitos nuevos**: sin `REDIS_URL` o con Redis caído la API
+  funciona igual (circuit breaker + respaldos de memoria); `/api/health`
+  expone `redis: up|down|disabled` y los listados `X-Cache: HIT|MISS`.
+- **Agentes**: 5 roles duplicados en `.github/agents/*.agent.md` (Copilot
+  CLI) y `.opencode/agent/*.md` (opencode) — pensador crítico, backend
+  pesado, frontend pesado, verificador y auditor RLS. Guía en
+  [`uso-agentes.md`](uso-agentes.md).
+
+**Hecho cuando:** estaba hecho al terminar — `lint` ✅ · `vite build` ✅ ·
+`test:ui` ✅ · `test:server` ✅ (con Redis real) · humo local con
+`redis: "up"`, doble GET en `MISS`→`HIT`, 125 GET → 12×`429` y prueba de
+invalidación `dir`/`rl` ✅ · los 5 agentes de Copilot cargan y responden ✅.
+Detalle en `memoria/42-backend-redis-agentes.md`.
+
+**Pendiente de la persona:** definir `REDIS_URL` en el panel de Vercel
+(Production *y* Preview) y **rotar la clave** de la instancia (quedó escrita
+en una conversación).
+
 ## Backlog (sin asignar)
 
 - **FEAT-03 · Landings por barrio** — `/barrio/<barrio>` con SEO; exige

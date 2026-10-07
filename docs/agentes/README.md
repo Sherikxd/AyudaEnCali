@@ -76,6 +76,8 @@ Verificación según los logs: `lint` ✅ · `vite build` ✅ · `test:ui` ✅ 4
 
 | Riesgo | Origen | Estado |
 | --- | --- | --- |
+| **`REDIS_URL` en Vercel** (Production *y* Preview) y **rotación de la clave** de la instancia Redis (quedó escrita en una conversación; el `.env` local está gitignored) | `42`, FEAT-13 | ⬜ de la **persona** — hasta entonces en prod sigue el respaldo local, que es correcto pero sin el beneficio |
+| **Agentes de Copilot probados solo con prompts cortos**: `--fleet` y tareas largas sin medir | `42`, [`uso-agentes.md`](uso-agentes.md) | ⬜ |
 | **Humo oficial contra producción** (`SMOKE_BASE_URL=https://ayuda-en-cali.vercel.app npm run smoke:vercel`) — cierra P1-1, P1-2, KO-3 y KO-4 y valida en vivo T2/T3/T17/T18 | `14`, auditoría | ⬜ **Sigue pendiente**: exige commit+push de la persona y deploy nuevo; la batería local da 43/43 |
 | **T7 · verificación/moderación** (FEAT-02): `verified` real con rol y cola de reportes | `tareas-semana-2.md` | ⬜ sin ejecutar (T1 ya la desbloquea) |
 | **T11 · semilla única** (FAL-08): `server/seedData.ts` aún no importa de `src/data/initialData.ts`; parte cliente hecha | `20` | 🟡 |
@@ -111,6 +113,8 @@ Verificación según los logs: `lint` ✅ · `vite build` ✅ · `test:ui` ✅ 4
 3. `decisiones.md` → no reabres lo ya decidido (identidad = JWT de Clerk, RLS
    sin políticas en tablas internas, una función por ruta, imports con `.js`…).
 4. `memoria/<NN>-<area>.md` de tu área → qué se hizo y qué deuda hay.
+5. `uso-agentes.md` → los 5 roles de agentes (Copilot y opencode), qué
+   delegarles y con qué reglas.
 
 **Al terminar:**
 1. Copia `plantilla.md` a `memoria/<NN>-<area>.md` y rellénala.

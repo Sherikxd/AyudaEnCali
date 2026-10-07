@@ -165,3 +165,45 @@ ruta desconocida y tiene una URL canónica propia.
 vistas (duplica contenido y hace más pesada la navegación).
 *Por qué:* permite compartir y enlazar una página completa sin introducir un
 router general para las pestañas existentes.
+
+**2026-10-07 · La caché de Redis no contradice el contador de apoyos
+(precisa la decisión del 2026-09-28).**
+El recuento sigue saliendo **solo** de la BD: la RPC `toggle_need_support` lo
+escribe con `count(*)` dentro de su transacción y el respaldo sin RPC hace un
+recuento exacto (`head` + `count=exact`) antes de actualizarlo. Redis **no
+calcula, no fusiona y no reescribe** `supporters_count`: solo guarda el
+snapshot que devolvió un `SELECT` y se invalida **en el mismo request** que lo
+modifica (`server/handlers/needsSupport.ts` → `invalidate('dir')`), además de
+con cualquier otra escritura de puntos o necesidades
+(`server/handlers/points.ts`, `server/handlers/needs.ts`). TTL de los
+listados de necesidades: **10 s** (el de puntos, 30 s; el de un ítem por id,
+60 s). El `POST /needs/:id/support` **nunca** se cachea.
+*Descartado:* no cachear los listados de necesidades (el tablón es lo más
+leído de la app y cada lectura la paga Supabase) y TTLs de 30-60 s (el
+contador quedaría atrasado justo cuando más importa: tras un apoyo).
+*Por qué:* la decisión del 28-09 prohíbe **derivar** el contador de la caché
+bajo concurrencia, no reflejar un valor leído de la BD mientras nadie lo
+modifica. Con invalidación sincrónica no existe ventana en la que se sirva un
+recuento que alguien acaba de cambiar; si Redis cae, la API sigue con su
+respaldo en memoria (`source: 'memory_cache'`), que era el «último recurso»
+original. Verificable con `X-Cache: HIT|MISS` en la respuesta de los
+listados.
+
+**2026-10-07 · El límite de tasa pasa a Redis (reabre la decisión del
+2026-09-30).**
+`createRateLimiter` cuenta ahora en Redis con un script `INCR`+`PEXPIRE`
+atómico (clave `aec:rl:<write|read|chat>:<ip>`) y vuelve al `Map` local solo
+cuando Redis no está disponible: sin configuración o caído, el límite es
+exactamente el de antes. En Vercel deja de multiplicarse por función (4
+cuentas independientes de escrituras → 1 cuenta real).
+*Descartado:* mantenerlo solo en memoria (en Vercel los 60/min de escrituras
+eran 240/min efectivos: el límite no significaba lo que decía) y un backend
+síncrono (mantendría `enforce()` bloqueante y añadiría la latencia de Redis a
+cada petición).
+*Por qué:* ahora 60/min significa 60/min en Express y en Vercel. *Efecto a
+saber:* para las IPs que superaban 60 escrituras/min en Vercel el límite se
+vuelve más estricto — era un agujero, no una promesa; subir `max` para
+compensar se descarta porque haría `429` en Express a quien ya lo recibía.
+*Coste y reversibilidad:* una instancia Redis gestionada; si algún día no
+quieres Redis, basta con no definir `REDIS_URL`.
+

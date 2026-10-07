@@ -276,7 +276,7 @@ export function buildGeminiContents(
 export const chatHandler: ApiHandler = async (input, res) => {
   if (effectiveMethod(input.method) !== 'POST') return notFoundResult(input);
 
-  if (chatLimiter.enforce(input.clientIp, res)) return null;
+  if (await chatLimiter.enforce(input.clientIp, res)) return null;
 
   const parsed = validateChat(input.body);
   if (!parsed.ok) {

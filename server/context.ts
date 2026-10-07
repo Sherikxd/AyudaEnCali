@@ -14,12 +14,34 @@
  * una semilla local nunca se presenta como directorio real.
  */
 import { errorMessage, logger } from './logger.js';
+import { cacheGet, cacheSet } from './cache.js';
 import { memory } from './store.js';
 import { getSupabaseClient, mapNeedRow, mapPointRow, withSupabaseRetry } from './supabase.js';
 import type { HelpNeedRow, HelpPointRow } from './supabase.js';
 
 /** Caducidad del contexto en memoria (por instancia de función/proceso). */
 const CONTEXT_TTL_MS = 30_000;
+
+/**
+ * Caducidad del mismo contexto en Redis: al compartirlo, la primera pregunta
+ * de una función fría (o de otro proceso) no paga dos `SELECT` si otra
+ * instancia los hizo hace menos de medio minuto. Se invalida con cada
+ * escritura del directorio, igual que el resto del espacio `dir`.
+ */
+const CONTEXT_TTL_S = 30;
+const CONTEXT_CACHE_KEY = 'dir:ctx:all';
+
+/**
+ * Copia del contexto tal y como salió de la BD, lista para reconstruirse en
+ * otra función/proceso. `hasLive*` viaja con ella para que una tabla leída
+ * con éxito no se confunda con la semilla local.
+ */
+interface ContextSnapshot {
+  points: typeof memory.points;
+  needs: typeof memory.needs;
+  hasLivePoints: boolean;
+  hasLiveNeeds: boolean;
+}
 
 /** Espera tras un fallo: no hace falta esperar el TTL entero para reintentar. */
 const RETRY_MS = 5_000;
@@ -42,9 +64,25 @@ export function getChatContextAvailability(): ChatContextAvailability {
   return { points: hasLivePoints, needs: hasLiveNeeds };
 }
 
+/** Reconstruye el contexto local (y sus banderas) desde un snapshot. */
+function applySnapshot(snapshot: ContextSnapshot): void {
+  memory.points = snapshot.points;
+  memory.needs = snapshot.needs;
+  hasLivePoints = snapshot.hasLivePoints;
+  hasLiveNeeds = snapshot.hasLiveNeeds;
+}
+
 async function loadContext(): Promise<void> {
   const client = getSupabaseClient();
   if (!client) return; // sin configuración no hay contexto real disponible para el chat
+
+  // Redis primero: si otra función ya trajo el directorio, se ahorran los
+  // dos SELECT sin renunciar a que la invalidación de escrituras los borre.
+  const snapshot = await cacheGet<ContextSnapshot>(CONTEXT_CACHE_KEY);
+  if (snapshot) {
+    applySnapshot(snapshot);
+    return;
+  }
 
   const [points, needs] = await Promise.all([
     withSupabaseRetry<HelpPointRow[]>('Supabase help_points (chat)', () =>
@@ -64,6 +102,22 @@ async function loadContext(): Promise<void> {
   if (!needs.error && Array.isArray(needs.data)) {
     memory.needs = needs.data.map(mapNeedRow);
     hasLiveNeeds = true;
+  }
+
+  // Solo se comparte lo leído con éxito: un fallo total no se propaga, y
+  // una tabla que siguió en semilla conserva su bandera `false` para que el
+  // chat no la presente como directorio real.
+  if (hasLivePoints || hasLiveNeeds) {
+    await cacheSet(
+      CONTEXT_CACHE_KEY,
+      {
+        points: memory.points,
+        needs: memory.needs,
+        hasLivePoints,
+        hasLiveNeeds,
+      } satisfies ContextSnapshot,
+      CONTEXT_TTL_S,
+    );
   }
 }
 

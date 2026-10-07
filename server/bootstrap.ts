@@ -13,10 +13,15 @@
  *    definido.
  *  - `initSupabase()` crea el cliente con esas variables. Nunca lanza: sin
  *    configuración, la API responde desde la caché en memoria.
+ *  - `initRedis()` crea el cliente de caché y de límite de tasa con
+ *    `REDIS_URL`. Tampoco lanza: sin la variable, o con Redis caído, la API
+ *    sigue funcionando con sus respaldos locales (`server/redis.ts`).
  */
 import dotenv from 'dotenv';
+import { initRedis } from './redis.js';
 import { initSupabase } from './supabase.js';
 
 if (!process.env.VERCEL) dotenv.config();
 
 initSupabase();
+initRedis();

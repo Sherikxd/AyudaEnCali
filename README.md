@@ -77,17 +77,20 @@ puntos de salud, y para publicar lo que el barrio necesita.
 │   ├── vercel.ts          # createApiRoute(): adaptador de las funciones api/*.ts
 │   ├── http.ts            # ApiRequest/ApiHandler, cabeceras, lectura del cuerpo, IP
 │   ├── middleware.ts       # cabeceras de seguridad, 404 JSON (apiNotFound), errorHandler
-│   ├── limiters.ts        # writeLimiter (60/min) y chatLimiter (15/min) por IP
-│   ├── rateLimit.ts       # limitador de tasa genérico (en memoria)
+│   ├── redis.ts            # cliente Redis: caché y límite de tasa compartidos.
+│   │                      #   Sin REDIS_URL o con Redis caído → respaldo local
+│   ├── cache.ts            # getOrSet()/invalidate() sobre Redis (TTL por clave)
+│   ├── limiters.ts         # write (60/min) · read (120/min) · chat (15/min) por IP
+│   ├── rateLimit.ts        # límite de tasa: INCR+PEXPIRE en Redis, Map si cae
 │   ├── auth.ts            # verifica el JWT de Clerk (Authorization: Bearer)
 │   ├── validation.ts       # validación/saneamiento de todos los payloads
-│   ├── store.ts           # caché en memoria: puntos, necesidades, comentarios, apoyos
-│   ├── context.ts         # contexto de datos del asistente (TTL 30 s sobre Supabase)
+│   ├── store.ts           # respaldo de BD caída en memoria (no es la caché de latencia)
+│   ├── context.ts         # contexto del asistente (TTL 30 s; snapshot compartido en Redis)
 │   ├── seedData.ts         # datos semilla de Cali (fallback sin BD)
 │   ├── supabase.ts         # cliente Supabase: reintentos, sondeo del esquema, mappers
 │   ├── schemaAdmin.ts      # aplica el esquema con la Management API (opcional)
 │   ├── schema.ts           # lee supabase/schema.sql y lo sirve en /api/supabase/sql
-│   ├── bootstrap.ts        # dotenv + initSupabase(), importado antes que nada
+│   ├── bootstrap.ts        # dotenv + initSupabase() + initRedis(), importado antes que nada
 │   └── logger.ts           # logging con niveles
 ├── api/                   # 10 funciones de Vercel (una por ruta; el plan Hobby
 │   │                      #   admite 12)
@@ -115,6 +118,10 @@ puntos de salud, y para publicar lo que el barrio necesita.
 │   ├── types/index.ts      # dominio + contrato de la API (compartido)
 │   └── utils/              # logger, storage, seo, consent (tipografías), sanitize, sync
 ├── docs/agentes/           # memoria compartida: decisiones, auditorías, tareas
+├── docs/legible/           # el proyecto explicado sin jerga
+├── .github/agents/         # agentes de Copilot CLI (pensador, backend, frontend,
+│   │                      #   verificador, auditor RLS) → docs/agentes/uso-agentes.md
+├── .opencode/agent/        # los mismos 5 roles como subagentes de opencode
 ├── public/
 │   ├── 404.html            # 404 autocontenida y noindex (estado 404 real)
 │   └── images/             # imágenes estáticas (visibles en producción)
@@ -130,9 +137,13 @@ puntos de salud, y para publicar lo que el barrio necesita.
 **Flujo de datos:** componente → `AppContext` → `src/services/api.ts` →
 el adaptador del entorno (`server/app.ts` en Express, `api/*.ts` +
 `server/vercel.ts` en Vercel) → el núcleo de `server/handlers/` →
-Supabase. Si Supabase falla, el servidor responde desde la caché en
-memoria; si el navegador no puede contactar al servidor, la UI usa lo
-guardado en `localStorage`. En ningún caso la app se queda en blanco.
+Supabase, con **Redis delante como caché de latencia** (listados, ítems por
+id y contexto del asistente, TTL de 10-60 s; se invalida en cada escritura).
+Si Redis no está configurado o cae, los mismos núcleos van directos a
+Supabase. Si Supabase falla, el servidor responde desde la caché en memoria
+(`source: 'memory_cache'`); si el navegador no puede contactar al servidor,
+la UI usa lo guardado en `localStorage`. En ningún caso la app se queda en
+blanco.
 
 ## Requisitos
 
@@ -176,6 +187,7 @@ que empiezan con `VITE_`.
 | `CLERK_PUBLISHABLE_KEY` | No | Alias sin prefijo `VITE_` de la misma clave (también aceptado por el servidor) |
 | `CLERK_SECRET_KEY` | Sí (auth) | Clave secreta, **solo servidor**. Verifica el JWT de todas las rutas con sesión (escrituras, apoyos y `/api/support/mine`). Si falta, el resto de la app funciona pero esas rutas responden `401` |
 | `CLOUDINARY_URL` | Para CDN | URL de cuenta (`cloudinary://clave:secreto@nube`) que usa **solo** `npm run cdn:upload`. El cliente nunca la ve: conoce el *cloud name* público de `src/config/images.ts` |
+| `REDIS_URL` | No | Caché de lecturas y límite de tasa compartidos (decisión 2026-10-07). Si falta — o Redis cae — la API funciona igual con sus respaldos en memoria: nunca es requisito para arrancar. En Vercel va en *Settings → Environment Variables* |
 
 > **Aviso sobre `VITE_*`**: esas variables se leen **al compilar** (`vite
 > build`) y quedan escritas en el JavaScript estático; definirlas después en
@@ -244,7 +256,7 @@ clientes existentes. Los errores usan el formato
 
 | Método | Ruta bajo `/api` (también `/api/v1`) | Descripción |
 | --- | --- | --- |
-| `GET` | `/api/health` | Salud del servicio |
+| `GET` | `/api/health` | Salud del servicio y de la caché (`redis`: `up` · `down` · `disabled`) |
 | `GET` | `/api/config` | Estado de integraciones, sin secretos |
 | `GET` | `/api/supabase/sql` | DDL de `supabase/schema.sql`; requiere el token servidor `SQL_ADMIN_TOKEN` (401 si falta o no coincide) |
 | `GET` | `/api/points` | Centros de ayuda (Supabase o caché) |
@@ -276,10 +288,19 @@ moderada, no un listado público. `/api/support/mine` es un recurso privado de
 IDs, consulta hasta 500 filas de Supabase y no acepta `page`/`limit`; no forma
 parte de los listados paginados.
 
-Límites: **15 req/min** en `/api/chat` y **60 req/min** por IP en las
-escrituras (cabeceras `RateLimit-*`, respuesta `429` al superarlo). En
-Vercel esos límites son **por función** (una cuenta por ruta, ver
-[Vercel](#vercel-plan-hobby-gratis)); en Express es una sola cuenta.
+**Caché:** `GET /api/points`, `GET /api/needs` y el contexto del asistente se
+sirven desde Redis con TTL corto (10 s el listado de necesidades, 30 s el de
+puntos y el contexto, 60 s un ítem por id) y se invalidan en **cada**
+escritura. La respuesta lleva `X-Cache: HIT|MISS` para verlo sin mirar la
+BD; el cuerpo conserva su campo `source` (`supabase` · `memory_cache`), que
+sigue significando «¿de dónde salió el dato, de la BD o del respaldo local?».
+Sin `REDIS_URL` o con Redis caído, las mismas rutas van directo a Supabase.
+
+**Límites:** **15 req/min** en `/api/chat`, **120 req/min** en las lecturas
+públicas y **60 req/min** por IP en las escrituras (cabeceras
+`RateLimit-*`, respuesta `429` al superarlo). La cuenta vive en Redis, así
+que es **la misma en Express y en Vercel**, sin multiplicarse por función;
+si Redis no está, cada proceso cuenta en memoria con los mismos topes.
 
 **Autenticación:** las escrituras de puntos, necesidades, apoyos y comentarios,
 el ciclo de vida de puntos/necesidades, `GET /api/support/mine` y
@@ -591,23 +612,26 @@ Detalles del despliegue:
   inactividad) paga su propio *cold start* (~250-500 ms de arranque del
   módulo: dotenv, cliente Supabase y límites en memoria) en lugar de uno
   solo compartido.
-- **Rate limit y cachés son por función**: viven en memoria y cada función
-  tiene la suya (mismo `max`, distinta cuenta). Fluid conserva las
-  instancias entre peticiones calientes; un *cold start* vacía la caché y
-  reinicia los contadores: no pierde datos porque la fuente de verdad es
-  Supabase. La consecuencia práctica es que **el límite global de Express se
-  convierte en límites independientes por función**:
+- **Rate limit y caché de lectura: compartidos vía Redis** (decisión
+  2026-10-07): cada función sigue teniendo su propio cliente y su propia
+  memoria, pero las cuentas de límite (`aec:rl:*`) y los snapshots de
+  listados viven en Redis, así que **un IP ve la misma ventana en Express y
+  en Vercel**, sin multiplicarse por función. Fluid conserva las instancias
+  entre peticiones calientes; un *cold start* vacía solo la memoria local y
+  reinicia los contadores locales, que ya no son la fuente. No pierde datos
+  porque la fuente de verdad sigue siendo Supabase.
 
   | Límite | Express (un proceso) | Vercel (una función por ruta) |
   | --- | --- | --- |
-  | Escrituras (`writeLimiter`, 60/min por IP) | **una sola cuenta** compartida por las 4 rutas (`points`, `needs`, `needs/:id/support`, `comments`): 60 escrituras/min en total | **4 cuentas independientes** → hasta 60/min *por ruta*, o sea 240/min en total |
-  | Asistente (`chatLimiter`, 15/min por IP) | 15/min en `/api/chat` | idéntico: `chat.ts` es su propia función |
+  | Escrituras (`writeLimiter`, 60/min por IP) | **una sola cuenta** compartida por las 4 rutas (`points`, `needs`, `needs/:id/support`, `comments`) | **la misma cuenta en Redis**: 60 escrituras/min en total |
+  | Lecturas (`readLimiter`, 120/min por IP) | 120/min en `points`, `needs` y `comments` | la misma cuenta en Redis |
+  | Asistente (`chatLimiter`, 15/min por IP) | 15/min en `/api/chat` | la misma cuenta en Redis |
 
-  Es decir, en Vercel es *más permisivo* (cuatro veces más escrituras por
-  minuto permitidas al mismo IP) pero nunca más restrictivo: nadie que
-  funcionaba en Express deja de funcionar. Si quieres endurecerlo, sube el
-  `max` de `writeLimiter` en `server/limiters.ts` (afecta a ambos entornos)
-  o añade un *middleware* de borde en `vercel.json`.
+  **Sin `REDIS_URL`** (o con Redis caído) cada función vuelve a contar en
+  memoria, que es el comportamiento anterior: más permisivo, nunca
+  restrictivo. Para endurecerlo, sube el `max` de `server/limiters.ts`
+  (afecta a ambos entornos) o añade un *middleware* de borde en
+  `vercel.json`.
 - **Los estáticos los sirve el CDN** desde `dist/` (`express.static` se
   ignora en Vercel): las cabeceras de `/assets` y de imágenes las pone
   `vercel.json`, con la misma caché que antes.

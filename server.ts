@@ -19,6 +19,7 @@ import { fileURLToPath } from 'url';
 import { errorHandler } from './server/middleware';
 import { enableViteDevCsp } from './server/http';
 import { errorMessage, logger } from './server/logger';
+import { closeRedis } from './server/redis';
 import { maybeVerifySchema } from './server/supabase';
 import app from './server/app';
 
@@ -127,6 +128,9 @@ async function startServer(): Promise<void> {
   const shutdown = (signal: string) => {
     logger.info(`Se recibió ${signal}, cerrando el servidor...`);
     server.close(() => process.exit(0));
+    // La conexión con Redis se suelta en paralelo: si tarda, el timeout de
+    // abajo termina el proceso igualmente.
+    void closeRedis();
     setTimeout(() => process.exit(1), 5000).unref();
   };
 

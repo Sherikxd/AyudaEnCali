@@ -135,6 +135,7 @@ la app en blanco.
 | Nivel caído | Qué ocurre | Quién lo cubre |
 | --- | --- | --- |
 | Gemini | El chat responde con el directorio local | `server/chatFallback.ts` |
+| Redis (la caché rápida) | Nada visible: la API consulta Supabase directo y el límite de peticiones se cuenta en el servidor | `server/redis.ts`, `server/cache.ts` |
 | Supabase | La API responde desde la **caché en memoria** (datos semilla de Cali) | `server/store.ts` |
 | Servidor (sin internet) | La UI usa lo guardado en `localStorage` y **cola** lo escrito para reintentarlo | `src/utils/storage.ts`, `src/utils/sync.ts` |
 | Excepción de React | `ErrorBoundary` pinta un mensaje, no deja pantalla en blanco | `src/components/ErrorBoundary.tsx` |

@@ -10,6 +10,7 @@ import {
 import { readLimiter, writeLimiter } from '../limiters.js';
 import { pageMeta, paginate, readPageParams, type PageParams } from '../pagination.js';
 import { resolveEntityId } from '../resourceId.js';
+import { cacheGet, cacheSet, getOrSet, invalidate } from '../cache.js';
 import { memory, purgeReportsFromCache, pushInCache, removeFromCache, replaceInCache } from '../store.js';
 import {
   getSupabaseClient,
@@ -36,10 +37,25 @@ import type { HelpPoint } from '../../src/types/index.js';
  * `vercel.json`.
  */
 
-/** Lee el punto de la caché o, si no está, de la base de datos. */
+/** Vida de un listado en Redis: corta a propósito (el mapa se refresca). */
+const LIST_TTL_S = 30;
+/** Vida de un punto por id en Redis. */
+const POINT_TTL_S = 60;
+
+/**
+ * Lee el punto: memoria local → Redis → base de datos.
+ *
+ * Redis solo guarda puntos que salieron de un `SELECT` y se invalida en cada
+ * escritura (`invalidate('dir')`), de modo que la caché no puede mostrar un
+ * punto editado ni borrado.
+ */
 async function loadPoint(id: string): Promise<HelpPoint | null> {
   const cached = memory.points.find((point) => point.id === id);
   if (cached) return cached;
+
+  const cacheKey = `dir:pts:${encodeURIComponent(id)}`;
+  const remote = await cacheGet<HelpPoint>(cacheKey);
+  if (remote) return remote;
 
   await maybeVerifySchema();
   const client = getSupabaseClient();
@@ -50,6 +66,7 @@ async function loadPoint(id: string): Promise<HelpPoint | null> {
     if (!error && Array.isArray(data) && data[0]) {
       const point = mapPointRow(data[0]);
       memory.points = pushInCache(memory.points, point);
+      await cacheSet(cacheKey, point, POINT_TTL_S);
       return point;
     }
   }
@@ -83,7 +100,7 @@ async function lifecycle(
   id: string,
 ): Promise<ApiResult> {
   if (method !== 'PUT' && method !== 'DELETE' && method !== 'PATCH') return notFoundResult(input);
-  if (writeLimiter.enforce(input.clientIp, res)) return null;
+  if (await writeLimiter.enforce(input.clientIp, res)) return null;
 
   const user = await getAuthenticatedUser(input);
   if (!user) {
@@ -133,6 +150,7 @@ async function lifecycle(
     }
 
     memory.points = replaceInCache(memory.points, moderated);
+    await invalidate('dir');
     return { status: 200, body: { point: moderated } };
   }
 
@@ -161,6 +179,7 @@ async function lifecycle(
     // `ON DELETE CASCADE` de `supabase/schema.sql`)… y también sus reportes.
     memory.comments = memory.comments.filter((comment) => comment.pointId !== point.id);
     purgeReportsFromCache('point', point.id);
+    await invalidate('dir');
     return { status: 200, body: { success: true, id: point.id } };
   }
 
@@ -198,18 +217,29 @@ async function lifecycle(
   }
 
   memory.points = replaceInCache(memory.points, updated);
+  await invalidate('dir');
   return { status: 200, body: { point: updated } };
 }
 
-/** Listado público, con paginación `?page=&limit=` opcional (T3/FAL-05). */
+/**
+ * Listado público, con paginación `?page=&limit=` opcional (T3/FAL-05).
+ *
+ * El listado se cachea en Redis (`aec:dir:*`, TTL {@link LIST_TTL_S}) y se
+ * invalida con cada escritura, así que una página cacheada es un snapshot
+ * exacto de la BD en los últimos segundos. `X-Cache: HIT|MISS` permite
+ * verlo en la respuesta sin tocar el cuerpo, que conserva `source`.
+ */
 async function listPoints(input: ApiRequest, res: JsonResponder): Promise<ApiResult> {
-  if (readLimiter.enforce(input.clientIp, res)) return null;
+  if (await readLimiter.enforce(input.clientIp, res)) return null;
 
   const params: PageParams | null = readPageParams(input.query);
-  await maybeVerifySchema();
-  const client = getSupabaseClient();
+  const cacheKey = params ? `dir:pts:list:${params.offset}:${params.limit}` : 'dir:pts:list:all';
 
-  if (client) {
+  const loaded = await getOrSet<Record<string, unknown>>(cacheKey, LIST_TTL_S, async () => {
+    await maybeVerifySchema();
+    const client = getSupabaseClient();
+    if (!client) return null;
+
     const { data, error, count } = await withSupabaseRetry<HelpPointRow[]>('Supabase help_points', () => {
       let query = client
         .from('help_points')
@@ -222,16 +252,18 @@ async function listPoints(input: ApiRequest, res: JsonResponder): Promise<ApiRes
     // Con paginación se respeta lo que devuelva la BD (una página vacía es
     // una página vacía); sin ella se conserva el comportamiento anterior:
     // si la tabla está vacía, la caché de respaldo sigue pintando datos.
-    if (!error && Array.isArray(data) && (params || data.length > 0)) {
-      const points = data.map(mapPointRow);
-      // Solo una lectura completa refresca la caché: una página no lo es.
-      if (!params) memory.points = points;
-      const body: Record<string, unknown> = params
-        ? { points, source: 'supabase', ...pageMeta(params, typeof count === 'number' ? count : data.length) }
-        : { points, source: 'supabase' };
-      return { status: 200, body };
-    }
-  }
+    if (error || !Array.isArray(data) || (!params && data.length === 0)) return null;
+
+    const points = data.map(mapPointRow);
+    // Solo una lectura completa refresca la caché: una página no lo es.
+    if (!params) memory.points = points;
+    return params
+      ? { points, source: 'supabase', ...pageMeta(params, typeof count === 'number' ? count : data.length) }
+      : { points, source: 'supabase' };
+  });
+
+  res.setHeader('X-Cache', loaded.hit ? 'HIT' : 'MISS');
+  if (loaded.value) return { status: 200, body: loaded.value };
 
   const points = params ? paginate(memory.points, params) : memory.points;
   const body: Record<string, unknown> = params
@@ -250,7 +282,7 @@ export const pointsHandler: ApiHandler = async (input, res) => {
   if (method === 'GET') return listPoints(input, res);
 
   if (method === 'POST') {
-    if (writeLimiter.enforce(input.clientIp, res)) return null;
+    if (await writeLimiter.enforce(input.clientIp, res)) return null;
 
     // Escritura autenticada: sin sesión de Clerk no se publica nada (T1).
     const user = await getAuthenticatedUser(input);
@@ -293,6 +325,7 @@ export const pointsHandler: ApiHandler = async (input, res) => {
     }
 
     memory.points = pushInCache(memory.points, point);
+    await invalidate('dir');
     return { status: 201, body: { point } };
   }
 

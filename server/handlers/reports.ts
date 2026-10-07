@@ -63,7 +63,7 @@ function entityExists(entityType: ReportEntityType, entityId: string): boolean {
 }
 
 async function createReport(input: ApiRequest, res: JsonResponder): Promise<ApiResult> {
-  if (writeLimiter.enforce(input.clientIp, res)) return null;
+  if (await writeLimiter.enforce(input.clientIp, res)) return null;
 
   // Escritura autenticada: sin sesión de Clerk no se reporta nada (T1).
   const user = await getAuthenticatedUser(input);
@@ -145,7 +145,7 @@ async function createReport(input: ApiRequest, res: JsonResponder): Promise<ApiR
 
 /** Cola completa, paginada siempre (`?page=&limit=`, T3). */
 async function listReports(input: ApiRequest, res: JsonResponder): Promise<ApiResult> {
-  if (readLimiter.enforce(input.clientIp, res)) return null;
+  if (await readLimiter.enforce(input.clientIp, res)) return null;
 
   const user = await getAuthenticatedUser(input);
   if (!user) {

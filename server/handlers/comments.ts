@@ -35,7 +35,7 @@ function isMissingPoint(error: SupabaseLikeError): boolean {
 }
 
 async function listComments(input: ApiRequest, res: JsonResponder): Promise<ApiResult> {
-  if (readLimiter.enforce(input.clientIp, res)) return null;
+  if (await readLimiter.enforce(input.clientIp, res)) return null;
 
   const params: PageParams | null = readPageParams(input.query);
   const rawPointId = input.query.pointId;
@@ -90,7 +90,7 @@ export const commentsHandler: ApiHandler = async (input, res) => {
   if (method === 'GET') return listComments(input, res);
 
   if (method === 'POST') {
-    if (writeLimiter.enforce(input.clientIp, res)) return null;
+    if (await writeLimiter.enforce(input.clientIp, res)) return null;
 
     // Escritura autenticada: sin sesión de Clerk no se comenta (T1).
     const user = await getAuthenticatedUser(input);

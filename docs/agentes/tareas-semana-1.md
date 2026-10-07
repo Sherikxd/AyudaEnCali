@@ -325,4 +325,13 @@ por eso en local nunca falló).
 `memoria/16-imports-esm-vercel.md`. **Pendiente:** commit+push y verificar
 el deploy + `SMOKE_BASE_URL=https://ayuda-en-cali.vercel.app npm run smoke:vercel`.
 
+## Integración Redis + agentes — **agente-backend** · ✅ (2026-10-07)
+
+Fuera de este tablero (petición directa de la persona): caché de lecturas y
+límite de tasa en Redis, resolución de la tensión con la decisión
+2026-09-28 y 5 agentes (Copilot + opencode). Registrado como **FEAT-13** en
+[`tareas-semana-2.md`](tareas-semana-2.md); detalle en
+[`memoria/42-backend-redis-agentes.md`](memoria/42-backend-redis-agentes.md) y
+guía en [`uso-agentes.md`](uso-agentes.md).
+
 ➡️ Semana 2 (auditoría FAL/FEAT): ver [`tareas-semana-2.md`](tareas-semana-2.md).

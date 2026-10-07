@@ -15,6 +15,7 @@ cómo está protegida y optimizada la plataforma.
 | Mapa | **Leaflet** (+ OpenStreetMap/ArcGIS) | El mapa interactivo de Cali |
 | Iconos | **lucide-react** | Iconografía de la interfaz |
 | API | **Node.js + Express** (ESM vía `tsx`) | Servidor HTTP en local, Docker y Node |
+| Caché y límites | **Redis** (opcional, con respaldo en memoria) | Respuestas rápidas y un límite de peticiones igual para todos los servidores |
 | Tipos compartidos | `src/types/index.ts` | El contrato de la API, cliente y servidor usan el mismo fichero |
 | Base de datos | **Supabase** (PostgreSQL + RLS) | Persistencia, 5 tablas |
 | Identidad | **Clerk** (`clerk-react` + `@clerk/backend`) | Registro, sesión y verificación del JWT |
@@ -102,15 +103,21 @@ políticas son la defensa en profundidad para quien tenga la clave pública.
 `npm run verify:rls` lo comprueba todo en un Postgres temporal, aplicando el
 esquema dos veces y comprobando quién puede leer, insertar y borrar.
 
-### 3.3 Tres niveles de almacenamiento
+### 3.3 Cuatro niveles de almacenamiento
 
 ```
-Supabase (verdad)  →  caché en memoria del servidor  →  localStorage del navegador
-      │                        │                              │
-   fuente de verdad      si la BD falla              si el servidor no responde
-                          responde con datos          se ve y se cola lo escrito
-                          semilla de Cali
+Supabase (verdad)  →  Redis (caché rápida)  →  memoria del servidor  →  localStorage
+      │                       │                        │                      │
+ fuente de verdad      si nadie ha escrito       si la BD falla         si el servidor
+                       hace menos de unos       responde con datos      no responde, se
+                       segundos, responde       semilla de Cali         ve y se cola lo
+                       ya sin volver a mirar                             escrito
 ```
+
+Redis es **solo velocidad**, nunca verdad: guarda una copia de lo que devolvió
+la base con un plazo de vida corto (10-60 segundos) y la borra en cuanto
+alguien escribe algo. Si no está configurado, o se cae, la app ni se entera:
+se salta este nivel y pregunta directamente a Supabase.
 
 La caché en memoria se vacía en cada reinicio (y en cada *cold start* de
 Vercel), pero no pierde datos porque la verdad siempre está en la base.
@@ -201,6 +208,7 @@ cabeceras `RateLimit-*` y `429` al superarlos.
 | Imágenes comprimidas y con `width`/`height` | ≈2,9 MB → ≈0,6 MB; sin saltos de layout |
 | Service Worker (PWA) | La app abre y muestra contenido sin conexión |
 | Leaflet dentro del chunk del mapa | No bloquea el render del resto de pestañas |
+| Redis como caché de lecturas | Listados, ítems y contexto del chat se responden en milisegundos sin repetir la misma consulta en Supabase; TTL de 10-60 s |
 
 ---
 
@@ -209,6 +217,7 @@ cabeceras `RateLimit-*` y `429` al superarlos.
 | Servicio | Rol | Si no está configurado |
 | --- | --- | --- |
 | **Supabase** | Base de datos (PostgreSQL + RLS) | Caché en memoria con datos semilla |
+| **Redis** | Caché de lecturas y límite de peticiones compartido entre servidores | Se salta ese nivel: consulta directa a Supabase y límite por servidor |
 | **Clerk** | Cuentas y sesión | Sin escrituras posibles (`401`); lectura pública sigue funcionando |
 | **Gemini** | Asistente IA | Directorio local de respaldo |
 | **Cloudinary** | CDN de imágenes | Imágenes de `public/images/` |

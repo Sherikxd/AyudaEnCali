@@ -5,6 +5,7 @@ import { getAuthenticatedUser, respondUnauthorized } from '../auth.js';
 import { readLimiter, writeLimiter } from '../limiters.js';
 import { pageMeta, paginate, readPageParams, type PageParams } from '../pagination.js';
 import { resolveEntityId } from '../resourceId.js';
+import { cacheGet, cacheSet, getOrSet, invalidate } from '../cache.js';
 import { memory, purgeReportsFromCache, pushInCache, removeFromCache, replaceInCache } from '../store.js';
 import {
   getSupabaseClient,
@@ -28,10 +29,32 @@ import { validateNeed, validateNeedUpdate } from '../validation.js';
  * moderador llegará en T7).
  */
 
-/** Lee la necesidad de la caché o, si no está, de la base de datos. */
+/**
+ * Vida de un listado de necesidades en Redis.
+ *
+ * Es deliberadamente más corta que la de los puntos: la fila lleva
+ * `supporters_count`, que cambia con cada apoyo. Junto con la invalidación
+ * inmediata de `server/handlers/needsSupport.ts` mantiene viva la decisión
+ * 2026-09-28 (el recuento lo escribe la BD; la caché solo refleja y se
+ * borra en el mismo request que lo modifica).
+ */
+const LIST_TTL_S = 10;
+/** Vida de una necesidad por id en Redis. */
+const NEED_TTL_S = 60;
+
+/**
+ * Lee la necesidad: memoria local → Redis → base de datos.
+ *
+ * El valor cacheado es literalmente la fila que devolvió Supabase (o el
+ * recuento que escribió su transacción de apoyos): aquí no se calcula nada.
+ */
 async function loadNeed(id: string): Promise<HelpNeedWithAuthor | null> {
   const cached = memory.needs.find((need) => need.id === id);
   if (cached) return cached;
+
+  const cacheKey = `dir:needs:${encodeURIComponent(id)}`;
+  const remote = await cacheGet<HelpNeedWithAuthor>(cacheKey);
+  if (remote) return remote;
 
   await maybeVerifySchema();
   const client = getSupabaseClient();
@@ -42,6 +65,7 @@ async function loadNeed(id: string): Promise<HelpNeedWithAuthor | null> {
     if (!error && Array.isArray(data) && data[0]) {
       const need = mapNeedRow(data[0]);
       memory.needs = pushInCache(memory.needs, need);
+      await cacheSet(cacheKey, need, NEED_TTL_S);
       return need;
     }
   }
@@ -68,7 +92,7 @@ async function lifecycle(
   id: string,
 ): Promise<ApiResult> {
   if (method !== 'PATCH' && method !== 'DELETE') return notFoundResult(input);
-  if (writeLimiter.enforce(input.clientIp, res)) return null;
+  if (await writeLimiter.enforce(input.clientIp, res)) return null;
 
   const user = await getAuthenticatedUser(input);
   if (!user) {
@@ -99,6 +123,7 @@ async function lifecycle(
     // Sus reportes se van con ella (misma regla que la FK `ON DELETE
     // CASCADE` de `entity_reports`, T28).
     purgeReportsFromCache('need', need.id);
+    await invalidate('dir');
     return { status: 200, body: { success: true, id: need.id } };
   }
 
@@ -132,18 +157,31 @@ async function lifecycle(
   }
 
   memory.needs = replaceInCache(memory.needs, updated);
+  await invalidate('dir');
   return { status: 200, body: { need: updated } };
 }
 
-/** Listado público, con paginación `?page=&limit=` opcional (T3/FAL-05). */
+/**
+ * Listado público, con paginación `?page=&limit=` opcional (T3/FAL-05).
+ *
+ * Se cachea en Redis con TTL {@link LIST_TTL_S} y se invalida en cada
+ * escritura (crear, editar, borrar o apoyar), por lo que el
+ * `supporters_count` de una respuesta cacheada nunca sobrevive a un apoyo
+ * confirmado. `X-Cache: HIT|MISS` lo deja ver en la cabecera.
+ */
 async function listNeeds(input: ApiRequest, res: JsonResponder): Promise<ApiResult> {
-  if (readLimiter.enforce(input.clientIp, res)) return null;
+  if (await readLimiter.enforce(input.clientIp, res)) return null;
 
   const params: PageParams | null = readPageParams(input.query);
-  await maybeVerifySchema();
-  const client = getSupabaseClient();
+  const cacheKey = params
+    ? `dir:needs:list:${params.offset}:${params.limit}`
+    : 'dir:needs:list:all';
 
-  if (client) {
+  const loaded = await getOrSet<Record<string, unknown>>(cacheKey, LIST_TTL_S, async () => {
+    await maybeVerifySchema();
+    const client = getSupabaseClient();
+    if (!client) return null;
+
     const { data, error, count } = await withSupabaseRetry<HelpNeedRow[]>('Supabase help_needs', () => {
       let query = client
         .from('help_needs')
@@ -153,16 +191,21 @@ async function listNeeds(input: ApiRequest, res: JsonResponder): Promise<ApiResu
       return query;
     });
 
-    if (!error && Array.isArray(data) && (params || data.length > 0)) {
-      const needs = data.map(mapNeedRow);
-      // Solo una lectura completa refresca la caché: una página no lo es.
-      if (!params) memory.needs = needs;
-      const body: Record<string, unknown> = params
-        ? { needs, source: 'supabase', ...pageMeta(params, typeof count === 'number' ? count : data.length) }
-        : { needs, source: 'supabase' };
-      return { status: 200, body };
-    }
-  }
+    if (error || !Array.isArray(data)) return null;
+    // Igual que en los puntos: con paginación la página vacía es real; sin
+    // ella, una tabla vacía deja el respaldo local pintando datos.
+    if (!params && data.length === 0) return null;
+
+    const needs = data.map(mapNeedRow);
+    // Solo una lectura completa refresca la caché: una página no lo es.
+    if (!params) memory.needs = needs;
+    return params
+      ? { needs, source: 'supabase', ...pageMeta(params, typeof count === 'number' ? count : data.length) }
+      : { needs, source: 'supabase' };
+  });
+
+  res.setHeader('X-Cache', loaded.hit ? 'HIT' : 'MISS');
+  if (loaded.value) return { status: 200, body: loaded.value };
 
   const needs = params ? paginate(memory.needs, params) : memory.needs;
   const body: Record<string, unknown> = params
@@ -181,7 +224,7 @@ export const needsHandler: ApiHandler = async (input, res) => {
   if (method === 'GET') return listNeeds(input, res);
 
   if (method === 'POST') {
-    if (writeLimiter.enforce(input.clientIp, res)) return null;
+    if (await writeLimiter.enforce(input.clientIp, res)) return null;
 
     // Escritura autenticada: sin sesión de Clerk no se publica nada (T1).
     const user = await getAuthenticatedUser(input);
@@ -224,6 +267,7 @@ export const needsHandler: ApiHandler = async (input, res) => {
     }
 
     memory.needs = pushInCache(memory.needs, need);
+    await invalidate('dir');
     return { status: 201, body: { need } };
   }
 

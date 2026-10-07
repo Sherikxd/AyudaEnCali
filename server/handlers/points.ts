@@ -179,7 +179,8 @@ async function lifecycle(
     // `ON DELETE CASCADE` de `supabase/schema.sql`)… y también sus reportes.
     memory.comments = memory.comments.filter((comment) => comment.pointId !== point.id);
     purgeReportsFromCache('point', point.id);
-    await invalidate('dir');
+    // Sus reportes se van con él: además de `dir`, la cola cacheada (`rpt`).
+    await invalidate('dir', 'rpt');
     return { status: 200, body: { success: true, id: point.id } };
   }
 

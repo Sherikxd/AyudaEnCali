@@ -261,7 +261,7 @@ clientes existentes. Los errores usan el formato
 
 | Método | Ruta bajo `/api` (también `/api/v1`) | Descripción |
 | --- | --- | --- |
-| `GET` | `/api/health` | Salud del servicio y de la caché (`redis`: `up` · `down` · `disabled`) |
+| `GET` | `/api/health` | Salud del servicio: `redis` (`up` · `down` · `disabled`) y `cache` (aciertos, fallos, escrituras, claves borradas y `hitRate`; contadores por instancia) |
 | `GET` | `/api/config` | Estado de integraciones, sin secretos |
 | `GET` | `/api/supabase/sql` | DDL de `supabase/schema.sql`; requiere el token servidor `SQL_ADMIN_TOKEN` (401 si falta o no coincide) |
 | `GET` | `/api/points` | Centros de ayuda (Supabase o caché) |
@@ -293,13 +293,28 @@ moderada, no un listado público. `/api/support/mine` es un recurso privado de
 IDs, consulta hasta 500 filas de Supabase y no acepta `page`/`limit`; no forma
 parte de los listados paginados.
 
-**Caché:** `GET /api/points`, `GET /api/needs` y el contexto del asistente se
-sirven desde Redis con TTL corto (10 s el listado de necesidades, 30 s el de
-puntos y el contexto, 60 s un ítem por id) y se invalidan en **cada**
-escritura. La respuesta lleva `X-Cache: HIT|MISS` para verlo sin mirar la
-BD; el cuerpo conserva su campo `source` (`supabase` · `memory_cache`), que
-sigue significando «¿de dónde salió el dato, de la BD o del respaldo local?».
-Sin `REDIS_URL` o con Redis caído, las mismas rutas van directo a Supabase.
+**Caché:** los listados e ítems pasan por Redis con TTL corto y se invalidan
+en **cada** escritura, así abrir una pestaña cuesta como mucho una ida a
+Supabase:
+
+| Lectura | Clave | TTL | Se borra en |
+| --- | --- | --- | --- |
+| `GET /api/needs` (listado) | `dir:needs:list:*` | 10 s | cualquier escritura de necesidades/apoyos |
+| `GET /api/needs/:id` | `dir:needs:<id>` | 60 s | igual |
+| `GET /api/points` (listado) | `dir:pts:list:*` | 30 s | cualquier escritura de puntos |
+| `GET /api/points/:id` | `dir:pts:<id>` | 60 s | igual |
+| Contexto del asistente | `dir:ctx:all` | 30 s | con el resto de `dir` |
+| `GET /api/comments` (sin paginar, global o por punto) | `cmt:all` · `cmt:pt:<id>` | 30 s | `POST /api/comments` |
+| `GET /api/support/mine` | `sup:<uid>:mine` | 60 s | apoyar o retirar un apoyo de esa cuenta |
+| `GET /api/reports` (cada página) | `rpt:p<n>:l<n>` | 30 s | reporte nuevo o borrado del punto/necesidad |
+
+La respuesta lleva `X-Cache: HIT|MISS` para verlo sin mirar la BD; el cuerpo
+conserva su campo `source` (`supabase` · `memory_cache`), que sigue
+significando «¿de dónde salió el dato, de la BD o del respaldo local?».
+`GET /api/health` expone los contadores (`cache.hits`, `cache.misses`,
+`cache.sets`, `cache.invalidations`, `cache.keysDeleted` y `cache.hitRate`)
+para medir el alivio real sobre Supabase. Sin `REDIS_URL` o con Redis caído,
+las mismas rutas van directo a Supabase.
 
 **Límites:** **15 req/min** en `/api/chat`, **120 req/min** en las lecturas
 públicas y **60 req/min** por IP en las escrituras (cabeceras

@@ -222,8 +222,9 @@ export const needsSupportHandler: ApiHandler = async (input, res) => {
   // responder para que ninguna lectura posterior sirva un contador anterior
   // al que se acaba de confirmar — así la decisión 2026-09-28 (el recuento
   // lo escribe la BD y la caché nunca lo infiere) sobrevive a la caché de
-  // Redis: ésta solo refleja y se retira en el mismo request.
-  await invalidate('dir');
+  // Redis: ésta solo refleja y se retira en el mismo request. El espacio
+  // `sup:<uid>` es la lista de «mis apoyos» de ESTA cuenta: acaba de cambiar.
+  await invalidate('dir', `sup:${user.userId}`);
 
   const payload: SupportResponse = {
     success: true,

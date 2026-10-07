@@ -54,6 +54,12 @@ process.env.SUPABASE_URL = '';
 process.env.SUPABASE_SERVICE_ROLE_KEY = '';
 // Chat determinista: sin clave, el núcleo responde `source: 'local'`.
 process.env.GEMINI_API_KEY = '';
+// Redis también es externo: aquí se prueban los RESPALDOS en memoria. Sin
+// esto, una clave que hubiera dejado `npm run dev` en el Redis del .env
+// local rompería corridas (p. ej. la cola de reportes: M11b espera un 503
+// cuando la BD falla y una caché HIT devolvería 200) y haría que el
+// resultado dependiera de lo que haya en Redis al lanzar los tests.
+process.env.REDIS_URL = '';
 // Clave de verificación forzada: el stub de JWKS responde a cualquier
 // secretKey, así el resultado no depende del .env de quien ejecute.
 process.env.CLERK_SECRET_KEY = 'sk_test_test-nucleos';

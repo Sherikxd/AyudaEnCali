@@ -892,19 +892,31 @@ para dos cosas que hoy se pagaban en cada petición y por proceso:
   `INCR`+`PEXPIRE` en `aec:rl:<write|read|chat>:<ip>`; `enforce()` pasó a
   `async` (12 call-sites). En Vercel deja de multiplicarse por función. Con
   Redis caído vuelve al `Map` local: mismo comportamiento que antes.
+- **Ampliación a todo el leído** (mismo día): `GET /api/comments` (espacio
+  `cmt`, 30 s), `GET /api/support/mine` (`sup:<uid>:mine`, 60 s) y
+  `GET /api/reports` (`rpt:p<n>:l<n>`, 30 s) también pasan por Redis, con su
+  invalidación en el mismo request de la escritura. Las listas vacías no se
+  cachean (una cola vacía congelada 30 s disfrazaría un fallo posterior de
+  la BD).
+- **Métricas**: `GET /api/health` expone `cache: { hits, misses, sets,
+  invalidations, keysDeleted, hitRate }` (contadores por instancia) para
+  medir el alivio real sobre Supabase.
 - **Sin requisitos nuevos**: sin `REDIS_URL` o con Redis caído la API
   funciona igual (circuit breaker + respaldos de memoria); `/api/health`
   expone `redis: up|down|disabled` y los listados `X-Cache: HIT|MISS`.
+  Los tests fuerzan `REDIS_URL=''` para no depender del estado local.
 - **Agentes**: 5 roles duplicados en `.github/agents/*.agent.md` (Copilot
   CLI) y `.opencode/agent/*.md` (opencode) — pensador crítico, backend
   pesado, frontend pesado, verificador y auditor RLS. Guía en
   [`uso-agentes.md`](uso-agentes.md).
 
 **Hecho cuando:** estaba hecho al terminar — `lint` ✅ · `vite build` ✅ ·
-`test:ui` ✅ · `test:server` ✅ (con Redis real) · humo local con
-`redis: "up"`, doble GET en `MISS`→`HIT`, 125 GET → 12×`429` y prueba de
-invalidación `dir`/`rl` ✅ · los 5 agentes de Copilot cargan y responden ✅.
-Detalle en `memoria/42-backend-redis-agentes.md`.
+`test:ui` ✅ · `test:server` ✅ (0 fallos; Redis apagado en los tests a
+propósito) · humo local con `redis: "up"`, doble GET en `MISS`→`HIT` en
+points, needs **y comments**, 125 GET → 12×`429`, métricas `cache.hitRate`
+visibles en `/api/health` y prueba de invalidación `dir`/`rl`/`sup:<uid>`/
+`rpt` ✅ · los 5 agentes de Copilot cargan y responden ✅. Detalle en
+`memoria/42-backend-redis-agentes.md`.
 
 **Pendiente de la persona:** definir `REDIS_URL` en el panel de Vercel
 (Production *y* Preview) y **rotar la clave** de la instancia (quedó escrita

@@ -9,6 +9,7 @@ import {
   respondUnauthorized,
 } from '../auth.js';
 import { readLimiter, writeLimiter } from '../limiters.js';
+import { cacheGet, cacheSet, invalidate } from '../cache.js';
 import {
   DEFAULT_PAGE_SIZE,
   pageMeta,
@@ -38,7 +39,12 @@ import type { EntityReport, ReportEntityType } from '../entities.js';
  *    reporte dos veces (dedup: la repetición responde `200` con
  *    `duplicate: true`, así la cola offline del cliente es idempotente).
  *  - `GET`: solo moderación (`canModerate`), siempre paginada: es una vista
- *    de trabajo, no un listado público con contrato que preservar.
+ *    de trabajo, no un listado público con contrato que preservar. Cada
+ *    página se cachea en Redis (`aec:rpt:*`, 30 s) y el espacio se borra
+ *    cuando entra un reporte nuevo o cuando el punto/necesidad asociado se
+ *    elimina (ahí se purgan sus reportes). Solo se cachean colas con
+ *    contenido: una vacía no se congela, para que un fallo posterior de la
+ *    BD no parezca una cola vacía real.
  *
  * En Vercel la ruta llega por el rewrite `/api/reports` de `vercel.json`
  * hacia la función de comentarios (`api/comments.ts` la despacha aquí):
@@ -140,8 +146,13 @@ async function createReport(input: ApiRequest, res: JsonResponder): Promise<ApiR
   }
 
   memory.reports = pushInCache(memory.reports, report);
+  // Entra un reporte nuevo: la cola cacheada por página queda obsoleta.
+  await invalidate('rpt');
   return { status: 201, body: { report } };
 }
+
+/** Vida de una página de la cola en Redis. */
+const QUEUE_TTL_S = 30;
 
 /** Cola completa, paginada siempre (`?page=&limit=`, T3). */
 async function listReports(input: ApiRequest, res: JsonResponder): Promise<ApiResult> {
@@ -162,6 +173,13 @@ async function listReports(input: ApiRequest, res: JsonResponder): Promise<ApiRe
     offset: 0,
   };
 
+  // La página sale de Redis si alguien la leyó hace menos de `QUEUE_TTL_S`:
+  // abrir la cola de moderación deja de costar un `SELECT` con `count=exact`.
+  const cacheKey = `rpt:p${params.page}:l${params.limit}`;
+  const cached = await cacheGet<Record<string, unknown>>(cacheKey);
+  res.setHeader('X-Cache', cached ? 'HIT' : 'MISS');
+  if (cached) return { status: 200, body: cached };
+
   await maybeVerifySchema();
   const client = getSupabaseClient();
 
@@ -177,14 +195,16 @@ async function listReports(input: ApiRequest, res: JsonResponder): Promise<ApiRe
     );
     if (!error && Array.isArray(data)) {
       const reports = data.map(mapReportRow);
-      return {
-        status: 200,
-        body: {
-          reports,
-          source: 'supabase',
-          ...pageMeta(params, typeof count === 'number' ? count : data.length),
-        },
+      const body = {
+        reports,
+        source: 'supabase',
+        ...pageMeta(params, typeof count === 'number' ? count : data.length),
       };
+      // La cola vacía NO se cachea: `[]` solo aparece en una BD recién
+      // creada o con el stub de pruebas, y congelarla 30 s haría que un
+      // fallo posterior de lectura se disfrazara de cola vacía real.
+      if (data.length > 0) await cacheSet(cacheKey, body, QUEUE_TTL_S);
+      return { status: 200, body };
     }
 
     // Con una BD configurada, una cola parcial en memoria ocultaría reportes

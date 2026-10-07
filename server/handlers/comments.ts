@@ -4,6 +4,7 @@ import { effectiveMethod, notFoundResult } from '../http.js';
 import { getAuthenticatedUser, respondUnauthorized, resolveDisplayName } from '../auth.js';
 import { readLimiter, writeLimiter } from '../limiters.js';
 import { pageMeta, paginate, readPageParams, type PageParams } from '../pagination.js';
+import { getOrSet, invalidate } from '../cache.js';
 import { memory, pushInCache } from '../store.js';
 import {
   getSupabaseClient,
@@ -22,6 +23,9 @@ import type { PointComment } from '../../src/types/index.js';
  *
  * Comentarios de un punto: lee de `point_comments` (persistente) y, si
  * Supabase no responde o la tabla aún no existe, cae a la caché en memoria.
+ * Las lecturas sin paginación pasan antes por Redis (`aec:cmt:*`, 30 s) y
+ * cada comentario nuevo borra el espacio, así que nadie ve una lista vieja;
+ * `X-Cache: HIT|MISS` lo deja ver sin tocar el cuerpo.
  *
  * T1/FAL-03: la identidad **nunca** sale del cuerpo. `userId` es el `sub`
  * del JWT verificado, `userName` se resuelve en el servidor (claims →
@@ -34,6 +38,9 @@ function isMissingPoint(error: SupabaseLikeError): boolean {
   return error.code === '23503' || /violates foreign key constraint/i.test(error.message ?? '');
 }
 
+/** Vida de un listado de comentarios en Redis (se invalida al comentar). */
+const LIST_TTL_S = 30;
+
 async function listComments(input: ApiRequest, res: JsonResponder): Promise<ApiResult> {
   if (await readLimiter.enforce(input.clientIp, res)) return null;
 
@@ -41,10 +48,16 @@ async function listComments(input: ApiRequest, res: JsonResponder): Promise<ApiR
   const rawPointId = input.query.pointId;
   const pointId = typeof rawPointId === 'string' ? sanitizeParam(rawPointId) : '';
 
-  await maybeVerifySchema();
-  const client = getSupabaseClient();
+  // Solo se cachean lecturas SIN paginación: una página vacía con `?page=`
+  // es una respuesta válida que no debe congelarse en Redis, y la clave por
+  // punto aísla los comentarios del resto del mapa.
+  const cacheKey = params ? null : pointId ? `cmt:pt:${encodeURIComponent(pointId)}` : 'cmt:all';
 
-  if (client) {
+  const load = async (): Promise<Record<string, unknown> | null> => {
+    await maybeVerifySchema();
+    const client = getSupabaseClient();
+    if (!client) return null;
+
     const { data, error, count } = await withSupabaseRetry<PointCommentRow[]>(
       'Supabase point_comments',
       () => {
@@ -62,18 +75,25 @@ async function listComments(input: ApiRequest, res: JsonResponder): Promise<ApiR
       },
     );
 
-    // Una página o un punto concreto NO refrescan la caché completa: solo lo
-    // hace una lectura sin filtros (comportamiento anterior).
-    if (!error && Array.isArray(data) && (params || data.length > 0)) {
-      const comments = data.map(mapCommentRow);
-      if (!params && !pointId) memory.comments = comments;
-      const body: Record<string, unknown> = { comments };
-      if (params) {
-        Object.assign(body, pageMeta(params, typeof count === 'number' ? count : data.length));
-      }
-      return { status: 200, body };
+    // Con BD y una lectura sin filtros vacía, la caché local sigue pintando
+    // datos (comportamiento anterior); con paginación, la página vacía es
+    // una respuesta real y se devuelve tal cual.
+    if (error || !Array.isArray(data) || (!params && data.length === 0)) return null;
+
+    const comments = data.map(mapCommentRow);
+    if (!params && !pointId) memory.comments = comments;
+    const body: Record<string, unknown> = { comments };
+    if (params) {
+      Object.assign(body, pageMeta(params, typeof count === 'number' ? count : data.length));
     }
-  }
+    return body;
+  };
+
+  const loaded = cacheKey
+    ? await getOrSet<Record<string, unknown>>(cacheKey, LIST_TTL_S, load)
+    : { value: await load(), hit: false };
+  if (cacheKey) res.setHeader('X-Cache', loaded.hit ? 'HIT' : 'MISS');
+  if (loaded.value) return { status: 200, body: loaded.value };
 
   const filtered = pointId
     ? memory.comments.filter((comment) => comment.pointId === pointId)
@@ -142,6 +162,9 @@ export const commentsHandler: ApiHandler = async (input, res) => {
     }
 
     memory.comments = pushInCache(memory.comments, comment);
+    // La lista (global y por punto) acaba de cambiar: se borra el espacio
+    // antes de responder, como en el resto de escrituras.
+    await invalidate('cmt');
     return { status: 201, body: { comment } };
   }
 

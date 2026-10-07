@@ -78,6 +78,35 @@ Registrado como **FEAT-13** en `tareas-semana-2.md`.
   los 7 parsean con la librería oficial de Mermaid y los enlaces internos
   (7) apuntan a ficheros existentes.
 
+## Ampliación (mismo día): el resto de lecturas + métricas
+
+Petición de la persona: «usar Redis para alivianar la carga a la base de
+datos». Puntos/necesidades ya estaban; se amplió el mismo patrón a las tres
+lecturas que aún pegaban a Supabase en cada petición y se añadieron los
+contadores para poder **medir** el alivio:
+
+- **`GET /api/comments`** → espacio `cmt` (`cmt:all` y `cmt:pt:<id>`, 30 s),
+  solo sin paginación. `POST /api/comments` borra el espacio entero.
+- **`GET /api/support/mine`** → espacio `sup:<uid>:mine` (60 s). Se cachea
+  **solo** el snapshot del `SELECT` (los apoyos locales del respaldo se
+  fusionan en cada lectura, sin congelarlos) y `needsSupport.ts` borra
+  `sup:<uid>` junto a `dir` en el mismo request.
+- **`GET /api/reports`** → espacio `rpt:p<n>:l<n>` (30 s), por página. Se
+  borra al entrar un reporte nuevo y al borrar el punto/necesidad (donde ya
+  se purgaban de memoria). **Una cola vacía no se cachea**: congelar `[]`
+  30 s haría que un fallo posterior de la BD pareciera una cola vacía real.
+- **Métricas**: `cache.ts` cuenta aciertos, fallos, escrituras,
+  invalidaciones y claves borradas; `GET /api/health` las expone en `cache`
+  (con `hitRate`), **por instancia**.
+- **Tests herméticos**: `scripts/test-nucleos.mjs` fuerza `REDIS_URL=''`
+  junto a `SUPABASE_*=''` y `GEMINI_API_KEY=''`. Sin esto, una clave que
+  hubiera dejado `npm run dev` rompería M11b (espera `503` cuando la BD
+  falla y una caché HIT devolvería `200`) y el resultado dependería de lo
+  que haya en el Redis local.
+
+También quedó `docs/arquitectura.md` (diagrama del sistema, 7 diagramas
+Mermaid) enlazado desde `README.md` y `docs/legible/README.md`.
+
 ## Verificación ejecutada
 
 | Comando | Resultado |
@@ -85,10 +114,11 @@ Registrado como **FEAT-13** en `tareas-semana-2.md`.
 | `npm run lint` | ✅ |
 | `npx vite build` | ✅ |
 | `npm run test:ui` | ✅ (`TODO OK`) |
-| `npm run test:server` | ✅ (`TODO OK`, con Redis real) |
+| `npm run test:server` | ✅ (`TODO OK`, 0 fallos; Redis apagado a propósito para que los tests no dependan del estado local) |
 | `npm run verify:rls` | n/a (no se tocó `schema.sql`) |
-| Humo local (`PORT=3124`) | ✅ `redis:"up"` · `X-Cache MISS→HIT` en points y needs · 125 GET → 113×200 + 12×429 con `RateLimit-*` y `Retry-After` |
-| Invalidación (`SCAN`+`UNLINK`) | ✅ `dir` borrado, `rl` conservado |
+| Humo local (`PORT=3124`) | ✅ `redis:"up"` · `X-Cache MISS→HIT` en points, needs **y comments** · 125 GET → 113×200 + 12×429 con `RateLimit-*` y `Retry-After` |
+| Métricas en vivo | ✅ `/api/health` → `cache:{hits:3,misses:3,sets:3,invalidations:0,keysDeleted:0,hitRate:0.5}` tras 3 lecturas dobles |
+| Invalidación (`SCAN`+`UNLINK`) | ✅ `dir` borrado, `rl` conservado · `invalidate('sup:usuario-uno')` borra **solo** esa cuenta (la otra y `rpt` intactas) · `invalidate('rpt')` borra solo la cola |
 | `copilot -p --agent=<los 5>` | ✅ los 5 cargan y responden citando el repo |
 
 ## Decisiones tomadas (y por qué)

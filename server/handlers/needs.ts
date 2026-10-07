@@ -123,7 +123,8 @@ async function lifecycle(
     // Sus reportes se van con ella (misma regla que la FK `ON DELETE
     // CASCADE` de `entity_reports`, T28).
     purgeReportsFromCache('need', need.id);
-    await invalidate('dir');
+    // Sus reportes se van con ella: además de `dir`, la cola cacheada (`rpt`).
+    await invalidate('dir', 'rpt');
     return { status: 200, body: { success: true, id: need.id } };
   }
 

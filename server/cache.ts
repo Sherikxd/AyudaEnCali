@@ -30,6 +30,39 @@ const KEY_PREFIX = 'aec:';
 const SCAN_LIMIT = 50;
 const SCAN_COUNT = 100;
 
+/**
+ * Contadores de la caché, expuestos en `GET /api/health` para poder medir el
+ * alivio real sobre Supabase (aciertos, fallos y claves borradas).
+ *
+ * Son **por instancia**: en Express es un único proceso, pero en Vercel cada
+ * función cuenta lo suyo y el agregado solo se ve en los logs. No guardan
+ * nada sensible (solo números), por eso pueden salir en una ruta pública.
+ */
+export interface CacheStats {
+  /** `GET` que respondieron desde Redis. */
+  hits: number;
+  /** `GET` sin valor (incluye Redis caído o desactivado). */
+  misses: number;
+  /** Escrituras confirmadas en Redis. */
+  sets: number;
+  /** Invalidaciones ejecutadas (cualquier espacio). */
+  invalidations: number;
+  /** Claves borradas por invalidación. */
+  keysDeleted: number;
+  /** `hits / (hits + misses)` con dos decimales; `0` si aún no hubo tráfico. */
+  hitRate: number;
+}
+
+const counters = { hits: 0, misses: 0, sets: 0, invalidations: 0, keysDeleted: 0 };
+
+/** Fotografía de los contadores (copia, no referencia: seguro de serializar). */
+export function cacheStats(): CacheStats {
+  const total = counters.hits + counters.misses;
+  const hitRate = total === 0 ? 0 : Math.round((counters.hits / total) * 100) / 100;
+  return { ...counters, hitRate };
+}
+
+
 /** Resultado de {@link getOrSet}: `hit` dice si venía de Redis. */
 export interface CacheResult<T> {
   /** `null` si el cargador no produjo valor (BD caída, tabla vacía…). */
@@ -61,8 +94,14 @@ function deserialize<T>(raw: string): T | null {
 /** Lee una clave. `null` si no existe, si está caducada o si Redis falla. */
 export async function cacheGet<T>(key: string): Promise<T | null> {
   const raw = await withRedis((client) => client.get(KEY_PREFIX + key));
-  if (raw === null) return null;
-  return deserialize<T>(raw);
+  if (raw === null) {
+    counters.misses += 1;
+    return null;
+  }
+  const value = deserialize<T>(raw);
+  if (value === null) counters.misses += 1;
+  else counters.hits += 1;
+  return value;
 }
 
 /** Escribe una clave con TTL. Devuelve `false` si no se pudo guardar. */
@@ -70,7 +109,11 @@ export async function cacheSet(key: string, value: unknown, ttlSeconds: number):
   const payload = serialize(value);
   if (payload === null) return false;
   const done = await withRedis((client) => client.set(KEY_PREFIX + key, payload, 'EX', ttlSeconds));
-  return done === 'OK';
+  if (done === 'OK') {
+    counters.sets += 1;
+    return true;
+  }
+  return false;
 }
 
 /**
@@ -99,6 +142,7 @@ export async function getOrSet<T>(
 export async function invalidate(...spaces: string[]): Promise<void> {
   if (spaces.length === 0) return;
   await withRedis(async (client) => {
+    counters.invalidations += 1;
     for (const space of spaces) {
       const pattern = `${KEY_PREFIX}${space}:*`;
       let cursor = '0';
@@ -106,7 +150,10 @@ export async function invalidate(...spaces: string[]): Promise<void> {
       do {
         const [next, keys] = await client.scan(cursor, 'MATCH', pattern, 'COUNT', SCAN_COUNT);
         cursor = next;
-        if (keys.length > 0) await client.unlink(...keys);
+        if (keys.length > 0) {
+          await client.unlink(...keys);
+          counters.keysDeleted += keys.length;
+        }
         iterations += 1;
       } while (cursor !== '0' && iterations < SCAN_LIMIT);
     }

@@ -68,7 +68,7 @@ flowchart TB
     H --> CTXS
 
     subgraph REDIS["Redis (opcional, gestionado)"]
-        RD1["Caché de lecturas<br/>aec:dir:* · TTL 10-60 s<br/>invalidada en cada escritura"]
+        RD1["Caché de lecturas<br/>aec:dir:* · cmt:* · sup:* · rpt:*<br/>TTL 10-60 s, invalidada al escribir"]
         RD2["Límite de tasa compartido<br/>aec:rl:* · INCR + PEXPIRE"]
     end
 
@@ -227,6 +227,9 @@ sequenceDiagram
 - Si Supabase falla, `server/store.ts` responde con la última copia en
   memoria o con la semilla de Cali.
 - Orden de la lectura: **memoria → Redis → Supabase → (respaldo)**.
+- Mismo patrón, con sus espacios y TTLs propios, en `GET /api/comments`,
+  `GET /api/support/mine` y `GET /api/reports` (ver §6.1). El ejemplo usa
+  puntos porque es la ruta más leída del mapa.
 
 ### 5.2 Escritura (`POST /api/points`)
 
@@ -306,13 +309,28 @@ flowchart LR
 | Nivel | Dónde | Qué guarda | Vida | Quién la borra |
 | --- | --- | --- | --- | --- |
 | 1 | `localStorage` del navegador | Listados vistos y escrituras pendientes | Hasta que cambie el usuario o el sync | `src/utils/sync.ts` |
-| 2 | Redis `aec:dir:*` | Copias de lo que devolvió un `SELECT` | 10-60 s (TTL) | `invalidate()` en cada escritura |
+| 2 | Redis `aec:<espacio>:*` | Copias de lo que devolvió un `SELECT` | 10-60 s (TTL) | `invalidate()` en cada escritura |
 | 3 | Redis `aec:rl:*` | Contadores de peticiones por IP | Ventana de 60 s | Expiración automática |
 | 4 | `server/store.ts` | Últimos 500 ítems + semilla | Vida del proceso | Reescrituras y purgas |
 | 5 | Supabase | **Verdad** | Permanente | El propio dominio |
 
 Si un nivel falla, se salta al siguiente. Ninguna caché de nivel 2-4 calcula
 nunca `supporters_count`: solo copia lo que leyó de la base.
+
+### 6.1 Espacios de Redis y sus invalidaciones
+
+| Espacio | Lecturas que cubre | Se borra en |
+| --- | --- | --- |
+| `dir` | puntos, necesidades y contexto del asistente | cualquier escritura de puntos/necesidades y cada apoyo |
+| `cmt` | comentarios (global y por punto, sin paginar) | `POST /api/comments` |
+| `sup:<uid>` | «mis apoyos» de una cuenta | esa cuenta apoya o retira un apoyo |
+| `rpt` | cada página de la cola de moderación | reporte nuevo, o borrado del punto/necesidad asociado |
+| `rl` | ventanas de límite de tasa | expiración (`PEXPIRE`), nunca a mano |
+
+Los contadores de aciertos, fallos, escrituras y claves borradas salen en
+`GET /api/health` (`cache: { hits, misses, sets, invalidations, keysDeleted,
+hitRate }`) y son **por instancia**: en Express los suma un proceso; en
+Vercel, cada función.
 
 ---
 

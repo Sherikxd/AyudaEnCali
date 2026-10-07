@@ -1,6 +1,6 @@
 import type { ApiHandler } from '../http.js';
 import { effectiveMethod, notFoundResult } from '../http.js';
-import { redisPing } from '../cache.js';
+import { cacheStats, redisPing } from '../cache.js';
 import { redisStatus } from '../redis.js';
 
 /**
@@ -12,6 +12,10 @@ import { redisStatus } from '../redis.js';
  * error de la API — la ruta sigue en `200`, porque con Redis caído todo el
  * mundo sigue respondiendo con sus respaldos en memoria.
  *
+ * `cache` añade los contadores de la caché (aciertos, fallos, escrituras y
+ * claves borradas) para medir el alivio real sobre Supabase. Son por
+ * instancia: en Vercel cada función suma la suya.
+ *
  * Cualquier otro método responde 404, como Express con `app.get('/api/health')`.
  */
 export const healthHandler: ApiHandler = async (input) => {
@@ -22,6 +26,6 @@ export const healthHandler: ApiHandler = async (input) => {
 
   return {
     status: 200,
-    body: { status: 'ok', time: new Date().toISOString(), redis },
+    body: { status: 'ok', time: new Date().toISOString(), redis, cache: cacheStats() },
   };
 };

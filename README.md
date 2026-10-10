@@ -2,6 +2,7 @@
 
 # AyudaEnCali
 (toda contribución es bienvenida :)
+
 **Plataforma comunitaria de emergencias para Santiago de Cali**
 
 Mapa interactivo + tablón de necesidades + asistente de IA (`CaliSolidaria IA`)

@@ -1,0 +1,41 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "plugins": ["typescript", "react", "unicorn", "import"],
+  "categories": {
+    "correctness": "error",
+    "suspicious": "warn",
+    "perf": "warn",
+    "pedantic": "off",
+    "restriction": "off"
+  },
+  "env": {
+    "browser": true,
+    "node": true,
+    "es2024": true
+  },
+  "rules": {
+    "react/exhaustive-deps": "error",
+    "react/rules-of-hooks": "error"
+  },
+  "overrides": [
+    {
+      "files": ["src/**", "server/**", "api/**"],
+      "rules": {
+        "no-console": "error"
+      }
+    },
+    {
+      "files": ["src/utils/logger.ts", "server/logger.ts"],
+      "rules": {
+        "no-console": "off"
+      }
+    },
+    {
+      "files": ["scripts/**"],
+      "rules": {
+        "no-console": "off",
+        "no-unused-vars": "warn"
+      }
+    }
+  ]
+}

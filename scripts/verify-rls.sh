@@ -9,7 +9,9 @@
 #   3. Aplica el esquema DOS veces para probar la idempotencia.
 #   4. Comprueba las políticas RLS:
 #        · anon      → lee, no inserta, no borra
-#        · authenticated con token  → inserta
+#        · authenticated con token  → NO inserta y NO actualiza en
+#          help_points/help_needs (solo escribe el backend: A1/A2 de la
+#          auditoría de seguridad)
 #        · authenticated sin token  → no inserta
 #        · need_supporters, point_comments y entity_reports → sin políticas
 #          (solo el backend) y con clave primaria que impide apoyos
@@ -86,11 +88,16 @@ GRANT USAGE ON SCHEMA public TO anon, authenticated;
 GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO anon, authenticated;
 SQL
 
-step "Políticas instaladas (esperadas: 6)"
+step "Políticas instaladas (esperadas: 2: solo lectura pública)"
 psql -Atc "SELECT '  ' || tablename || ' | ' || policyname || ' | ' || cmd
            FROM pg_policies WHERE schemaname='public' ORDER BY tablename, policyname;"
 count=$(psql -Atc "SELECT count(*) FROM pg_policies WHERE schemaname='public';")
-[ "$count" = "6" ] || { echo "FALLO: hay $count políticas, se esperaban 6"; fail=1; }
+[ "$count" = "2" ] || { echo "FALLO: hay $count políticas, se esperaban 2 (solo lectura)"; fail=1; }
+
+# Las 4 políticas de escritura de la auditoría A1/A2 deben estar ausentes.
+writen=$(psql -Atc "SELECT count(*) FROM pg_policies
+                    WHERE schemaname='public' AND cmd IN ('INSERT','UPDATE');")
+[ "$writen" = "0" ] || { echo "FALLO: quedan $writen políticas de escritura (A1/A2)"; fail=1; }
 
 step "RLS habilitado en las cinco tablas"
 rls=$(psql -Atc "SELECT relname || '=' || relrowsecurity FROM pg_class
@@ -139,15 +146,26 @@ else
   echo "  FALLO: quedan $remaining copias (borrado: $out)"; fail=1
 fi
 
-step "4) authenticated CON token sí puede insertar"
+step "4) authenticated CON token NO puede insertar (A2: solo escribe el backend)"
 if psql -Atc "SET ROLE authenticated;
   SET request.jwt.claim.sub = '11111111-1111-4111-8111-111111111111';
   INSERT INTO help_needs (id,title,description,category,barrio,contact_name,contact_phone)
   VALUES ('x2','Insertado con sesión','ok','acopio','San Antonio','Ana','300');
-  RESET ROLE;" >/dev/null 2>&1; then
-  echo "  OK"
+  RESET ROLE;" 2>&1 | grep -q "row-level security"; then
+  echo "  OK: INSERT autenticado en help_needs bloqueado"
 else
-  echo "  FALLO: el insert autenticado fue rechazado"; fail=1
+  echo "  FALLO: el INSERT autenticado en help_needs pasó (A2)"; fail=1
+fi
+
+# Mismo ataque contra los centros: publicar con verified explícito y phone propio.
+if psql -Atc "SET ROLE authenticated;
+  SET request.jwt.claim.sub = '11111111-1111-4111-8111-111111111111';
+  INSERT INTO help_points (id,name,category,lat,lng,address,barrio,phone,verified)
+  VALUES ('y3','Centro falso','acopio',3.4,-76.5,'Calle 9 #9-9','San Antonio','000',true);
+  RESET ROLE;" 2>&1 | grep -q "row-level security"; then
+  echo "  OK: INSERT autenticado en help_points bloqueado"
+else
+  echo "  FALLO: el INSERT autenticado en help_points pasó (A2)"; fail=1
 fi
 
 step "5) authenticated SIN token no puede insertar (se espera ERROR)"
@@ -160,7 +178,49 @@ else
   echo "  FALLO: el INSERT sin token pasó"; fail=1
 fi
 
-step "6) need_supporters: anon ni lee ni escribe apoyos"
+step "6) authenticated CON token NO puede actualizar help_needs (A1)"
+# Valor de partida conocido, medible después del intento de escritura.
+psql -v ON_ERROR_STOP=1 -q -c "
+  UPDATE help_needs SET supporters_count = 0, author_id = NULL WHERE id = 'x1';"
+# Ojo: un UPDATE sin políticas RLS NO lanza error: afecta 0 filas (silencioso
+# en SQL y vacío en PostgREST). Por eso se comprueba con RETURNING y con el
+# valor real de la fila, no solo con el mensaje de error.
+out=$(psql -Atc "SET ROLE authenticated;
+  SET request.jwt.claim.sub = '11111111-1111-4111-8111-111111111111';
+  UPDATE help_needs
+    SET supporters_count = 999, author_id = '11111111-1111-4111-8111-111111111111'
+  WHERE id = 'x1' RETURNING id;" 2>&1)
+if echo "$out" | grep -qi "row-level security"; then
+  echo "  OK: UPDATE de help_needs rechazado con error RLS"
+elif echo "$out" | grep -qx "x1"; then
+  echo "  FALLO: el UPDATE autenticado modificó la fila de help_needs (A1)"; fail=1
+else
+  echo "  OK: UPDATE autenticado no afectó ninguna fila"
+fi
+kept=$(psql -Atc "SELECT supporters_count || '|' || coalesce(author_id,'NULL')
+                  FROM help_needs WHERE id='x1';")
+[ "$kept" = "0|NULL" ] || { echo "  FALLO: la necesidad x1 quedó en '$kept' (esperado 0|NULL)"; fail=1; }
+
+step "7) authenticated CON token NO puede actualizar help_points (A1)"
+psql -v ON_ERROR_STOP=1 -q -c "
+  UPDATE help_points SET verified = false, phone = '3001234', author_id = NULL WHERE id = 'p1';"
+out=$(psql -Atc "SET ROLE authenticated;
+  SET request.jwt.claim.sub = '11111111-1111-4111-8111-111111111111';
+  UPDATE help_points
+    SET verified = true, phone = '000', author_id = '11111111-1111-4111-8111-111111111111'
+  WHERE id = 'p1' RETURNING id;" 2>&1)
+if echo "$out" | grep -qi "row-level security"; then
+  echo "  OK: UPDATE de help_points rechazado con error RLS"
+elif echo "$out" | grep -qx "p1"; then
+  echo "  FALLO: el UPDATE autenticado modificó el centro p1 (A1)"; fail=1
+else
+  echo "  OK: UPDATE autenticado no afectó ninguna fila"
+fi
+kept=$(psql -Atc "SELECT verified || '|' || phone || '|' || coalesce(author_id,'NULL')
+                  FROM help_points WHERE id='p1';")
+[ "$kept" = "false|3001234|NULL" ] || { echo "  FALLO: el centro p1 quedó en '$kept'"; fail=1; }
+
+step "8) need_supporters: anon ni lee ni escribe apoyos"
 rows=$(psql -Atc "SET ROLE anon; SELECT count(*) FROM need_supporters; RESET ROLE;" 2>&1 | grep -E '^[0-9]+$' | head -1)
 if [ "$rows" = "0" ]; then
   echo "  OK: anon ve 0 filas"
@@ -184,7 +244,7 @@ else
   echo "  OK: solo el backend (service_role) escribe apoyos"
 fi
 
-step "7) un usuario = un apoyo (clave primaria need_id+user_id)"
+step "9) un usuario = un apoyo (clave primaria need_id+user_id)"
 psql -v ON_ERROR_STOP=1 -q -c "INSERT INTO need_supporters (need_id, user_id) VALUES ('x1','user_a');"
 if psql -Atc "INSERT INTO need_supporters (need_id, user_id) VALUES ('x1','user_a');" >/dev/null 2>&1; then
   echo "  FALLO: se aceptó el apoyo duplicado"; fail=1
@@ -195,7 +255,7 @@ psql -Atc "INSERT INTO need_supporters (need_id, user_id) VALUES ('x1','user_b')
 psql -Atc "SELECT '  apoyos de x1 registrados: ' || count(*) FROM need_supporters WHERE need_id='x1';"
 [ "$(psql -Atc "SELECT count(*) FROM need_supporters WHERE need_id='x1';")" = "2" ] || { echo "  FALLO: se esperaban 2 apoyos"; fail=1; }
 
-step "8) point_comments: solo el backend lee y escribe"
+step "10) point_comments: solo el backend lee y escribe"
 psql -v ON_ERROR_STOP=1 -q -c "
   INSERT INTO point_comments (id, point_id, author_id, author_name, author_role, author_barrio, body)
   VALUES ('c1','p1','user_a','Mariana Caicedo','voluntario','San Fernando','Traer agua potable.');"
@@ -216,7 +276,7 @@ else
   echo "  FALLO: anon leyó $cc_rows comentarios"; fail=1
 fi
 
-step "9) toggle_need_support: recuento real en la misma transacción"
+step "11) toggle_need_support: recuento real en la misma transacción"
 # x1 tiene 2 apoyos reales y supporters_count = 0: la función debe devolver
 # y guardar el count(*) de la tabla, nunca un delta desde la caché.
 c_add=$(psql -Atc "SELECT toggle_need_support('x1','user_c','add');")
@@ -241,7 +301,7 @@ c_missing=$(psql -Atc "SELECT toggle_need_support('no-existe','user_c','add');")
 [ -z "$c_missing" ] || { echo "  FALLO: se esperaba NULL para una necesidad inexistente"; fail=1; }
 echo "  OK: recuento, idempotencia y NULL para necesidad inexistente"
 
-step "10) toggle_need_support: solo la SERVICE ROLE puede ejecutarla"
+step "12) toggle_need_support: solo la SERVICE ROLE puede ejecutarla"
 for rol in anon authenticated; do
   if psql -Atc "SET ROLE $rol;
     SELECT toggle_need_support('x1','user_falso','add');
@@ -252,7 +312,7 @@ for rol in anon authenticated; do
   fi
 done
 
-step "11) point_comments: la FK impide comentarios huérfanos (T1)"
+step "13) point_comments: la FK impide comentarios huérfanos (T1)"
 if psql -Atc "INSERT INTO point_comments (id, point_id, author_id, author_name, body)
   VALUES ('c3','punto-inexistente','user_a','Nadie','huérfano');" 2>&1 \
   | grep -qi "violates foreign key constraint"; then
@@ -270,7 +330,7 @@ else
   echo "  FALLO: quedan $orphanes comentarios sin su punto"; fail=1
 fi
 
-step "12) help_needs.author_id: columna, índice y backfill (T1)"
+step "14) help_needs.author_id: columna, índice y backfill (T1)"
 cols=$(psql -Atc "SELECT count(*) FROM information_schema.columns
                   WHERE table_schema='public' AND table_name='help_needs'
                     AND column_name='author_id';")
@@ -283,7 +343,7 @@ heredado=$(psql -Atc "SELECT count(*) FROM help_needs WHERE id='x1' AND author_i
 [ "$heredado" = "1" ] || { echo "  FALLO: el backfill dejó un author_id inesperado"; fail=1; }
 echo "  OK: author_id presente, con índice y NULL en los heredados"
 
-step "13) entity_reports: RLS sin políticas, FK por tipo y dedup (T28)"
+step "15) entity_reports: RLS sin políticas, FK por tipo y dedup (T28)"
 # a) Fila válida, escrita como la escribe el backend (service_role).
 psql -v ON_ERROR_STOP=1 -q -c "
   INSERT INTO entity_reports (id, entity_type, entity_id, point_id, need_id, reporter_id, reason)

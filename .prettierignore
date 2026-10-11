@@ -1,0 +1,16 @@
+# Build y dependencias
+node_modules/
+dist/
+bun.lock
+package-lock.json
+
+# Configuración de agentes y documentación (no formatear: contratos de prompt
+# y docs con formato propio; decisiones cerradas no se reescriben)
+.opencode/
+.github/
+docs/
+README.md
+AGENTS.md
+
+# Congelado por decisión de este trabajo: no se toca en ninguna fase
+vercel.json

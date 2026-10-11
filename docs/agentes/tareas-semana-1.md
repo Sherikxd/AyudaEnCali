@@ -334,4 +334,38 @@ límite de tasa en Redis, resolución de la tensión con la decisión
 [`memoria/42-backend-redis-agentes.md`](memoria/42-backend-redis-agentes.md) y
 guía en [`uso-agentes.md`](uso-agentes.md).
 
+## Auditoría de seguridad · A1+A2 · RLS de `help_points`/`help_needs` — **agente-backend** · ✅ (2026-10-11)
+
+Dos vulnerabilidades ALTAS en `supabase/schema.sql`: políticas de
+`INSERT` (`WITH CHECK (auth.uid() IS NOT NULL)`) y de `UPDATE`
+(`USING (true) WITH CHECK (true)`) para el rol `authenticated` en
+`help_points` y `help_needs` → con el signup abierto de Supabase y la
+ANON KEY, cualquier cuenta podía publicar spam con
+`author_id`/`verified` arbitrarios (A2) y reescribir **cualquier** fila
+(marcar `verified`, cambiar `phone`/`whatsapp`, pisar `author_id` y
+`supporters_count`) vía PostgREST (A1).
+
+**Hacer (hecho):**
+- Verificar que nadie escribe con sesión anon/authenticated → confirmado:
+  el cliente no tiene cliente Supabase (habla con la API) y el servidor
+  escribe con `service_role`. **Eliminar** las 4 políticas (no
+  condicionarlas), con `DROP POLICY IF EXISTS` idempotente que remedia
+  también las BDs ya desplegadas; solo quedan las 2 de lectura pública.
+- `scripts/verify-rls.sh`: el INSERT autenticado ahora **espera fallo**
+  (paso 4) y se añaden los pasos 6-7 de **UPDATE autenticado que espera
+  fallo** en ambas tablas (comprobando `RETURNING` + valor real en BD: un
+  UPDATE sin políticas afecta 0 filas, no lanza error). Recuento de
+  políticas 6 → 2 + check `INSERT/UPDATE = 0`.
+
+**Hecho cuando:** `verify:rls` en verde (15 pasos) y el mismo script en
+rojo contra el esquema vulnerable. **Resultado (2026-10-11):** ✅
+`lint` · `vite build` · `test:ui` «TODO OK» · `test:server` «TODO OK» ·
+`verify:rls` **15 pasos [OK]** (PostgreSQL 17 portátil: el sistema no
+tiene `initdb`) · sabotaje en rojo (6 FALLO) · remediación sobre BD con
+el esquema viejo verificada (6 → 2 políticas, UPDATE posterior = 0
+filas). **Pendiente externo:** aplicar el `schema.sql` nuevo en el
+proyecto Supabase real (`npm run db:setup`) y sincronizar
+`README.md:376-377` (área agente-calidad). Detalle en
+[`memoria/43-backend-rls-a1a2.md`](memoria/43-backend-rls-a1a2.md).
+
 ➡️ Semana 2 (auditoría FAL/FEAT): ver [`tareas-semana-2.md`](tareas-semana-2.md).

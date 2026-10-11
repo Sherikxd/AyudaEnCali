@@ -6,10 +6,13 @@
 --
 -- Nota sobre permisos:
 --   * Lectura pública (cualquiera puede consultar el mapa/tablón).
---   * Escritura solo para usuarios autenticados en Supabase (rol
---     `authenticated`). El backend escribe con la SERVICE ROLE KEY, que
---     bypasea RLS; si solo configuras la ANON KEY, los INSERT serán
---     bloqueados por diseño.
+--   * Escritura SOLO del backend con la SERVICE ROLE KEY (bypasea RLS) y
+--     con la autorización propia de `server/handlers/*`. Los roles de API
+--     (`anon` y `authenticated`) NO pueden escribir en
+--     `help_points`/`help_needs`: no hay políticas de INSERT/UPDATE para
+--     ellos (auditoría de seguridad A1/A2, 2026-10-10), de modo que los
+--     INSERT se rechazan y los UPDATE no afectan ninguna fila. Si solo
+--     configuras la ANON KEY, todas las escrituras quedan bloqueadas.
 -- ===========================================================================
 
 -- TABLA 1: Puntos de ayuda y centros en Cali -------------------------------
@@ -200,50 +203,30 @@ BEGIN
       FOR SELECT USING (true);
   END IF;
 
-  -- Escritura solo autenticada -------------------------------------------
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_policies
-    WHERE schemaname = 'public' AND tablename = 'help_points'
-      AND policyname = 'Insercion autenticada de centros'
-  ) THEN
-    CREATE POLICY "Insercion autenticada de centros" ON help_points
-      FOR INSERT TO authenticated
-      WITH CHECK (auth.uid() IS NOT NULL);
-  END IF;
-
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_policies
-    WHERE schemaname = 'public' AND tablename = 'help_needs'
-      AND policyname = 'Insercion autenticada de necesidades'
-  ) THEN
-    CREATE POLICY "Insercion autenticada de necesidades" ON help_needs
-      FOR INSERT TO authenticated
-      WITH CHECK (auth.uid() IS NOT NULL);
-  END IF;
-
-  -- Actualización de apoyos/estado solo autenticada -----------------------
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_policies
-    WHERE schemaname = 'public' AND tablename = 'help_needs'
-      AND policyname = 'Actualizacion autenticada de necesidades'
-  ) THEN
-    CREATE POLICY "Actualizacion autenticada de necesidades" ON help_needs
-      FOR UPDATE TO authenticated
-      USING (true) WITH CHECK (true);
-  END IF;
-
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_policies
-    WHERE schemaname = 'public' AND tablename = 'help_points'
-      AND policyname = 'Actualizacion autenticada de centros'
-  ) THEN
-    CREATE POLICY "Actualizacion autenticada de centros" ON help_points
-      FOR UPDATE TO authenticated
-      USING (true) WITH CHECK (true);
-  END IF;
+  -- Escritura: SOLO el backend (SERVICE ROLE) --------------------------------
+  -- Auditoría de seguridad A1/A2 (2026-10-10). Antes existían políticas de
+  -- INSERT (`WITH CHECK (auth.uid() IS NOT NULL)`) y de UPDATE
+  -- (`USING (true) WITH CHECK (true)`) para `authenticated` en estas dos
+  -- tablas: con el signup abierto de Supabase y la ANON KEY, cualquier
+  -- cuenta podía crear filas con `author_id`/`verified` arbitrarios y
+  -- reescribir CUALQUIER fila (marcar `verified`, cambiar `phone`/
+  -- `whatsapp`, pisar `author_id` y `supporters_count`) vía PostgREST.
+  --
+  -- Se ELIMINAN en vez de condicionarlas tras comprobar en el repo que
+  -- NINGÚN código escribe con sesión anon/authenticated: el cliente no
+  -- tiene cliente Supabase (habla con la API) y el servidor escribe con
+  -- `service_role` (con la ANON KEY solo como respaldo de LECTURA, ya que
+  -- sin políticas de escritura esas escrituras quedan bloqueadas por
+  -- diseño). `DROP POLICY IF EXISTS` es idempotente y remedia también las
+  -- BDs ya desplegadas (que hoy siguen teniendo las políticas vulnerables).
+  DROP POLICY IF EXISTS "Insercion autenticada de centros" ON help_points;
+  DROP POLICY IF EXISTS "Insercion autenticada de necesidades" ON help_needs;
+  DROP POLICY IF EXISTS "Actualizacion autenticada de necesidades" ON help_needs;
+  DROP POLICY IF EXISTS "Actualizacion autenticada de centros" ON help_points;
 END $$;
 
--- Eliminaciones: sin políticas (nadie puede borrar desde la API con anon) --
+-- Eliminaciones: sin políticas (nadie puede borrar desde la API con anon
+-- ni con authenticated) --
 
 -- need_supporters, point_comments y entity_reports: RLS activo y SIN políticas --
 -- Solo el backend accede con la SERVICE ROLE KEY (que bypasea RLS). Así ni

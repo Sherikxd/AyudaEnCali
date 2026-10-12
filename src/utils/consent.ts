@@ -4,7 +4,8 @@ import { removeKey, loadJSON, saveJSON } from './storage';
  * Consentimiento de cookies y recursos de terceros.
  *
  * - `essential` (o sin respuesta): solo lo imprescindible (sesión de acceso,
- *   seguridad y este propio consentimiento). No se pide nada a terceros.
+ *   seguridad, avisos de error y este propio consentimiento). No se carga
+ *   ningún recurso opcional de terceros.
  * - `all`: además se cargan los recursos de terceros (tipografías de Google),
  *   que pueden registrar la IP conforme a la política de dicho proveedor.
  *

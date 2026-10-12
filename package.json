@@ -28,6 +28,7 @@
     "@clerk/backend": "^3.20.1",
     "@clerk/clerk-react": "^5.61.3",
     "@google/genai": "^2.4.0",
+    "@sentry/browser": "^11.6.0",
     "@supabase/supabase-js": "^2.117.2",
     "@tailwindcss/vite": "^4.3.3",
     "@vercel/analytics": "^2.0.1",

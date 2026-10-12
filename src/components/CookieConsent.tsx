@@ -29,8 +29,8 @@ export const CookieConsent: React.FC = () => {
         <div className="flex-1 text-xs leading-relaxed text-slate-600">
           <p className="font-extrabold text-slate-900 text-[13px] mb-0.5">Usamos cookies</p>
           <p>
-            Las esenciales (sesión de acceso y seguridad) están siempre activas. Con tu permiso
-            cargamos además recursos de terceros, hoy las tipografías de Google.{' '}
+            Las esenciales (sesión de acceso, seguridad y avisos de fallos) están siempre activas.
+            Con tu permiso cargamos además recursos de terceros, hoy las tipografías de Google.{' '}
             <a
               href="/preguntas-frecuentes/#cookies"
               className="inline-flex items-center gap-1 font-bold text-orange-700 hover:text-orange-800 underline underline-offset-2"

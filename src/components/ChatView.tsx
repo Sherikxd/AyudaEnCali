@@ -2,6 +2,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import { useApp, useMapUI } from '../context/AppContext';
 import { ChatMessage, HelpPoint } from '../types';
 import { sendChatMessage } from '../services/geminiService';
+import { captureError } from '../config/sentry';
 import { logger } from '../utils/logger';
 import { 
   Send, 
@@ -103,6 +104,7 @@ export const ChatView: React.FC = () => {
       setMessages((prev) => [...prev, assistantMsg]);
     } catch (error) {
       logger.error('No se pudo consultar al asistente:', error);
+      captureError(error, { tags: { feature: 'asistente' } });
       // Sin respuesta del servidor NO se inventa texto (T14): se avisa y se
       // sugiere mirar el mapa, que sí tiene los datos locales.
       notify('El asistente no está disponible en este momento. Puedes consultar los puntos directamente en el mapa.', 'error');

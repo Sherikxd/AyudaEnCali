@@ -7,7 +7,7 @@ import { FaqAnswer } from './FaqAnswer';
 
 const CONSENT_LABEL: Record<CookieConsent, string> = {
   all: 'Aceptaste las opcionales (recursos de terceros activados).',
-  essential: 'Solo esenciales (no se pide nada a terceros).',
+  essential: 'Solo esenciales (sin recursos opcionales de terceros).',
 };
 
 export const FaqPage: React.FC = () => {

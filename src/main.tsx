@@ -4,9 +4,14 @@ import { ClerkProvider } from '@clerk/clerk-react';
 import { resolveClerkPublishableKey } from './config/clerk.ts';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { applyConsent, readConsent } from './utils/consent.ts';
+import { initSentry } from './config/sentry.ts';
 import { logger } from './utils/logger.ts';
 import App from './App.tsx';
 import './index.css';
+
+// Lo primero: así los fallos del arranque (consentimiento, resolución de la
+// clave de Clerk, render inicial) también llegan a Sentry.
+initSentry();
 
 // Aplica la elección de cookies guardada antes de renderizar: si la persona
 // aceptó las opcionales, las tipografías de terceros empiezan a cargarse ya.

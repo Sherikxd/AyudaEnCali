@@ -1,4 +1,5 @@
 import React from 'react';
+import { captureError } from '../config/sentry';
 import { logger } from '../utils/logger';
 
 interface ErrorBoundaryProps {
@@ -25,6 +26,7 @@ export class ErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBoun
 
   componentDidCatch(error: Error, info: React.ErrorInfo): void {
     logger.error('Error no controlado en la UI:', error, info.componentStack);
+    captureError(error, { contexts: { react: { componentStack: info.componentStack ?? '' } } });
   }
 
   handleReload = (): void => {

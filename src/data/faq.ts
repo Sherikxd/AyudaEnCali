@@ -200,13 +200,13 @@ export const FAQ_ITEMS: readonly FaqItem[] = [
       p(
         b('Siempre (esenciales):'),
         t(
-          ' la sesión de acceso y seguridad, y este propio consentimiento para no volver a preguntarte.',
+          ' la sesión de acceso y seguridad, este propio consentimiento para no volver a preguntarte y los avisos de fallos (Sentry, sin cookies ni grabación de tu sesión).',
         ),
       ),
       p(
         b('Solo si lo aceptas (opcionales):'),
         t(
-          ' recursos de terceros, hoy las tipografías de Google, que pueden registrar tu IP conforme a la política de dicho proveedor. Si eliges «Solo esenciales», no se pide nada a terceros y la app usa las fuentes del sistema.',
+          ' recursos de terceros, hoy las tipografías de Google, que pueden registrar tu IP conforme a la política de dicho proveedor. Si eliges «Solo esenciales», no cargamos esos recursos opcionales y la app usa las fuentes del sistema.',
         ),
       ),
       p(

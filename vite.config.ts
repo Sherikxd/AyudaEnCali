@@ -23,13 +23,14 @@ export default defineConfig(() => {
     },
     build: {
       // Vendors en chunks propios: el código de la app cambia a cada deploy y
-      // no debe invalidar la caché de React/Clerk, que casi nunca cambian.
+      // no debe invalidar la caché de React/Clerk/Sentry, que casi nunca cambian.
       // (Rolldown, el bundler de Vite 8, exige la forma de función.)
       rollupOptions: {
         output: {
           manualChunks: (moduleId: string) => {
             if (/node_modules\/(react|react-dom|scheduler)\//.test(moduleId)) return 'vendor-react';
             if (moduleId.includes('node_modules/@clerk/')) return 'vendor-clerk';
+            if (moduleId.includes('node_modules/@sentry/')) return 'vendor-sentry';
             return undefined;
           },
         },
